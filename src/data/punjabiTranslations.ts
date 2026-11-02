@@ -7,7 +7,7 @@ export interface ChatMessage {
   hasVoiceNote?: boolean;
   voiceNoteDuration?: string;
   voiceNoteScript?: string;
-  hasInteractiveCard?: 'SLOT_GUARANTEE' | 'UPI_RECEIPT' | 'VARIETY_SELECTOR';
+  hasInteractiveCard?: 'BOOKING_ESTIMATE' | 'VARIETY_SELECTOR';
   metadata?: Record<string, unknown>;
 }
 
@@ -32,12 +32,11 @@ export const INITIAL_CHAT_HISTORY: ChatMessage[] = [
   {
     id: 'msg-3',
     sender: 'bot',
-    text: 'Tuhade layi guaranteed clearance date and locked price calculate ho gayi hai. Tusi 18 din pehla book kar rahe ho, is layi Early-Bird Top Rate mila hai!',
-    textPunjabi: 'ਤੁਹਾਡੇ ਲਈ ਗਾਰੰਟੀਡ ਕਲੀਅਰੈਂਸ ਤਾਰੀਖ ਅਤੇ ਲਾਕਡ ਰੇਟ ਤਿਆਰ ਹੈ। 18 ਦਿਨ ਪਹਿਲਾਂ ਬੁੱਕ ਕਰਨ ਕਰਕੇ Early-Bird ਰੇਟ ਮਿਲਿਆ ਹੈ!',
+    text: 'Tuhade layi estimated clearance window te server-calculated indicative price tayar hai. Early booking naal planning priority mil sakdi hai.',
+    textPunjabi: 'ਤੁਹਾਡੇ ਲਈ ਅੰਦਾਜ਼ੀ ਕਲੀਅਰੈਂਸ ਵਿੰਡੋ ਅਤੇ ਇੰਡਿਕੇਟਿਵ ਰੇਟ ਤਿਆਰ ਹੈ। ਪਹਿਲਾਂ ਬੁੱਕ ਕਰਨ ਨਾਲ ਪਲੈਨਿੰਗ ਪ੍ਰਾਇਰਟੀ ਮਿਲ ਸਕਦੀ ਹੈ।',
     time: '10:42 AM',
-    hasInteractiveCard: 'SLOT_GUARANTEE',
-    hasVoiceNote: true,
+        hasVoiceNote: true,
     voiceNoteDuration: '0:22',
-    voiceNoteScript: 'Gurpreet ji, tuhada khet 16 October shaam 6 vaje tak clear karan di guarantee hai. Je asi late hoye, taan 4,500 rupaye late penalty tuhade UPI khate te turant credite hovigi.',
+    voiceNoteScript: 'Gurpreet ji, tuhade khet layi 16 October shaam da ik estimated clearance window dikh reha hai. Booking confirm hon ton baad NIRDHOOM tuhanu machine da status dassega. Payment is release vich connected nahi hai.',
   },
 ];

@@ -1,4 +1,6 @@
 import React, { useState } from 'react';
+import { Field } from '../../types';
+import { useAppLanguage } from '../../i18n/LanguageContext';
 import { 
   Calendar, 
   Sparkles, 
@@ -68,9 +70,62 @@ const BLOCK_DATA: BlockForecast[] = [
   },
 ];
 
-export const HarvestForecast: React.FC = () => {
+interface HarvestForecastProps { fields: Field[]; demoMode: boolean; }
+
+export const HarvestForecast: React.FC<HarvestForecastProps> = ({ fields, demoMode }) => {
+  const { t } = useAppLanguage();
   const [selectedDayIndex, setSelectedDayIndex] = useState<number>(14); // Mid-October
   const [selectedBlock, setSelectedBlock] = useState<string>('Sangrur Central');
+
+  if (!demoMode) {
+    const datedFields = fields
+      .filter((field) => Boolean(field.expected_harvest_date))
+      .slice()
+      .sort((a, b) => a.expected_harvest_date.localeCompare(b.expected_harvest_date));
+    const totalAcres = fields.reduce((sum, field) => sum + Math.max(0, Number(field.acreage) || 0), 0);
+    return (
+      <section className="ui-stack" aria-labelledby="live-harvest-title">
+        <div className="ui-card">
+          <div className="flex items-start justify-between gap-3 flex-wrap">
+            <div>
+              <h3 id="live-harvest-title" className="text-xl font-bold text-[var(--ink)]">{t('Harvest readiness from registered fields')}</h3>
+              <p className="ui-card-sub mt-1">{t('This view summarizes dates and acreage stored on connected field records. It is not a crop-maturity forecast and does not imply an external harvest-data provider is connected.')}</p>
+            </div>
+            <span className="badge">{t('LIVE FIELD RECORDS')}</span>
+          </div>
+          <div className="grid grid-cols-2 gap-3 mt-4">
+            <div className="ui-stat"><div className="ui-stat-label">{t('Registered fields')}</div><div className="ui-stat-value">{fields.length}</div></div>
+            <div className="ui-stat"><div className="ui-stat-label">{t('Declared area')}</div><div className="ui-stat-value">{totalAcres.toLocaleString()} <span className="text-sm">ac</span></div></div>
+          </div>
+        </div>
+        {datedFields.length === 0 ? (
+          <div className="ui-card" role="status">
+            <h4 className="font-semibold text-[var(--ink)]">{t('No harvest dates recorded')}</h4>
+            <p className="ui-card-sub mt-1">{t('Add expected harvest dates to field records before using this view for scheduling. No sample block statistics or projected baler counts are shown in live mode.')}</p>
+          </div>
+        ) : (
+          <div className="ui-card">
+            <h4 className="font-bold text-[var(--ink)]">{t('Declared harvest dates')}</h4>
+            <div className="mt-3 divide-y divide-[var(--line)]">
+              {datedFields.map((field) => (
+                <div key={field.id} className="py-3 flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <div className="font-semibold text-[var(--ink)]">{field.khasra_no || field.id}</div>
+                    <div className="text-sm text-[var(--muted)]">{field.village}, {field.district}</div>
+                  </div>
+                  <div className="text-right">
+                    <div className="font-semibold text-[var(--ink)]">{new Date(field.expected_harvest_date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</div>
+                    <div className="text-sm text-[var(--muted)]">{Number(field.acreage || 0).toLocaleString()} ac · {field.status.replace(/_/g, ' ')}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        <p className="text-xs text-[var(--muted)]">{t('Dates and acreage are declarations from field records, not independently verified crop maturity. Machine recommendations remain unavailable until validated availability and capacity data are connected.')}</p>
+      </section>
+    );
+  }
 
   const currentBlock = BLOCK_DATA.find((b) => b.name === selectedBlock) || BLOCK_DATA[0];
 
@@ -83,40 +138,40 @@ export const HarvestForecast: React.FC = () => {
   });
 
   return (
-    <div className="flex flex-col gap-6 max-w-6xl mx-auto p-2">
+    <div className="ui-stack">
       {/* Top Banner */}
-      <div className="glass-panel-emerald p-5">
+      <div className="ui-card relative overflow-hidden">
         <div className="flex items-center gap-3">
-          <div className="w-12 h-12 rounded-2xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 flex items-center justify-center shrink-0 shadow-lg shadow-emerald-500/30">
+          <div className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-[var(--wheat-soft)] text-[var(--wheat-ink)]">
             <Calendar className="w-6 h-6" />
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h3 className="font-extrabold text-lg text-white font-['Outfit']">
-                Wedge 4: Forecast the Harvest Before It Happens
+              <h3 className="font-[family-name:var(--font-display)] text-[24px] font-bold leading-tight text-[var(--ink)]">
+                {t('Harvest pressure planning — illustrative')}
               </h3>
               <span className="badge badge-emerald text-xs">
-                Sentinel-2 NDVI Maturity Moat
+                {t('Planning model • provider data required')}
               </span>
             </div>
-            <p className="text-xs text-slate-300 mt-1 max-w-2xl leading-relaxed">
-              PR-126 comes off late September to early October; Pusa-44 hits in late October. By tracking Sentinel-2 NDVI time series, Nirdhoom predicts block-by-block daily straw acreage to pre-position machinery before the burn panic strikes.
+            <p className="ui-card-sub max-w-2xl !text-[14px]">
+              {t('This workspace demonstrates how harvest timing could inform machine pre-positioning. The figures below are illustrative planning records unless a configured harvest-data provider supplies them.')}
             </p>
           </div>
         </div>
       </div>
 
       {/* Date Timeline Slider & Pre-positioning Engine */}
-      <div className="glass-panel p-5 flex flex-col gap-4">
-        <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+      <div className="ui-card flex flex-col gap-4">
+        <div className="flex items-center justify-between border-b border-emerald-900/10 pb-3">
           <div>
-            <span className="text-xs text-slate-400 block">Harvest Horizon Slider:</span>
-            <div className="text-xl font-black text-white font-mono">{formattedDate}</div>
+            <span className="text-xs text-emerald-950/55 block">{t('Harvest Horizon Slider:')}</span>
+            <div className="text-xl font-black text-emerald-950 font-semibold">{formattedDate}</div>
           </div>
 
-          <div className="bg-slate-900 px-3 py-1.5 rounded-lg border border-slate-800 text-xs">
-            <span className="text-slate-400">Paddy Maturity Curve: </span>
-            <span className="font-bold text-emerald-400">
+          <div className="bg-emerald-50 px-3 py-1.5 rounded-lg border border-emerald-900/10 text-xs">
+            <span className="text-emerald-950/55">{t('Paddy Maturity Curve:')} </span>
+            <span className="font-bold text-emerald-800">
               {selectedDayIndex < 12 ? 'PR-126 Early Wave' : selectedDayIndex < 24 ? 'Peak Pusa-44 Influx' : 'Late Harvest Tail'}
             </span>
           </div>
@@ -131,7 +186,7 @@ export const HarvestForecast: React.FC = () => {
             onChange={(e) => setSelectedDayIndex(Number(e.target.value))}
             className="w-full accent-emerald-500 cursor-pointer"
           />
-          <div className="flex justify-between text-[11px] text-slate-400 mt-1">
+          <div className="flex justify-between text-[11px] text-emerald-950/55 mt-1">
             <span>Oct 05 (PR-126 Start)</span>
             <span>Oct 20 (Early Transition)</span>
             <span>Oct 28 (Pusa-44 Peak Spike)</span>
@@ -139,35 +194,35 @@ export const HarvestForecast: React.FC = () => {
           </div>
         </div>
 
-        {/* PAU Ludhiana Agronomic Advisory with Real Farm Photograph */}
+        {/* Research context and planning assumptionsograph */}
         <div className="grid grid-cols-1 md:grid-cols-12 gap-3 mt-1">
-          <div className="md:col-span-8 p-3.5 rounded-xl bg-slate-950/80 border border-cyan-500/30 flex items-start gap-3 text-xs">
-            <Truck className="w-5 h-5 text-cyan-400 shrink-0 mt-0.5" />
+          <div className="md:col-span-8 p-3.5 rounded-xl bg-emerald-50/60 border border-cyan-500/30 flex items-start gap-3 text-xs">
+            <Truck className="w-5 h-5 text-emerald-700 shrink-0 mt-0.5" />
             <div>
-              <div className="font-bold text-white text-sm">
-                Automated Fleet Pre-Positioning Advisory ({formattedDate})
+              <div className="font-bold text-emerald-950 text-sm">
+                {t('Automated Fleet Pre-Positioning Advisory')} ({formattedDate})
               </div>
-              <p className="text-slate-300 mt-0.5 leading-relaxed">
-                NDVI curves indicate <strong>{currentBlock.name}</strong> will see an influx of{' '}
-                <strong className="text-cyan-300">
+              <p className="text-emerald-950/65 mt-0.5 leading-relaxed">
+                {t('In this illustrative scenario,')} <strong>{currentBlock.name}</strong> is assigned a planning volume of{' '}
+                <strong className="text-emerald-800">
                   {Math.round(currentBlock.totalAcres * (selectedDayIndex < 15 ? 0.04 : 0.08))} acres/day
                 </strong>{' '}
-                over the next 72 hours. Recommended to pre-position{' '}
-                <strong className="text-emerald-400">{currentBlock.recommendedBalerCount} Balers</strong> from nearby CHCs to avoid delay penalties.
+                {t('over the next 72 hours')}. The model suggests reviewing capacity for up to{' '}
+                <strong className="text-emerald-800">{currentBlock.recommendedBalerCount} balers</strong>, but this is a static scenario—not a live NDVI signal, measured harvest forecast, or verified machine recommendation.
               </p>
             </div>
           </div>
 
-          <div className="md:col-span-4 rounded-xl overflow-hidden border border-amber-500/30 relative bg-slate-950 min-h-[90px]">
+          <div className="md:col-span-4 rounded-xl overflow-hidden border border-amber-500/30 relative bg-white min-h-[90px]">
             <img 
               src="/images/punjab_farm_hero.jpg" 
               alt="PAU PR-126 Golden Harvest" 
               className="w-full h-full object-cover object-center max-h-24"
-            />
+             loading="lazy" decoding="async" />
             <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/40 to-transparent" />
             <div className="absolute bottom-1.5 left-2.5 right-2.5 flex items-center justify-between text-[10px] font-mono">
-              <span className="text-amber-300 font-bold">PAU LUDHIANA ADVISORY</span>
-              <span className="text-emerald-400 font-semibold">PR-126 ~93 Days</span>
+              <span className="text-amber-800 font-bold">PAU LUDHIANA ADVISORY</span>
+              <span className="text-emerald-800 font-semibold">PR-126 ~93 Days</span>
             </div>
           </div>
         </div>
@@ -183,31 +238,31 @@ export const HarvestForecast: React.FC = () => {
               onClick={() => setSelectedBlock(block.name)}
               className={`p-3.5 rounded-xl border transition-all cursor-pointer ${
                 isSelected
-                  ? 'bg-slate-900/95 border-emerald-500 ring-1 ring-emerald-500 shadow-lg'
-                  : 'bg-slate-900/70 border-slate-800 hover:border-slate-700'
+                  ? 'bg-emerald-50/95 border-emerald-500 ring-1 ring-emerald-500 shadow-lg'
+                  : 'bg-emerald-50/70 border-emerald-900/10 hover:border-slate-700'
               }`}
             >
-              <div className="font-bold text-sm text-white">{block.name}</div>
-              <div className="text-[11px] text-slate-400 mt-0.5">Peak: {block.peakWindow}</div>
+              <div className="font-bold text-sm text-emerald-950">{block.name}</div>
+              <div className="text-[11px] text-emerald-950/55 mt-0.5">Peak: {block.peakWindow}</div>
 
               <div className="mt-3 flex flex-col gap-1 text-xs">
-                <div className="flex justify-between text-slate-400">
+                <div className="flex justify-between text-emerald-950/55">
                   <span>PR-126:</span>
-                  <span className="font-mono text-emerald-400">{block.pr126Acres.toLocaleString()} ac</span>
+                  <span className="font-mono text-emerald-800">{block.pr126Acres.toLocaleString()} ac</span>
                 </div>
-                <div className="flex justify-between text-slate-400">
+                <div className="flex justify-between text-emerald-950/55">
                   <span>Pusa-44:</span>
-                  <span className="font-mono text-amber-400">{block.pusa44Acres.toLocaleString()} ac</span>
+                  <span className="font-mono text-amber-700">{block.pusa44Acres.toLocaleString()} ac</span>
                 </div>
-                <div className="flex justify-between text-slate-400">
+                <div className="flex justify-between text-emerald-950/55">
                   <span>Basmati:</span>
-                  <span className="font-mono text-cyan-300">{block.basmatiAcres.toLocaleString()} ac</span>
+                  <span className="font-mono text-emerald-800">{block.basmatiAcres.toLocaleString()} ac</span>
                 </div>
               </div>
 
-              <div className="pt-2 mt-2 border-t border-slate-800 flex justify-between items-center text-xs">
-                <span className="text-slate-400">Total Crop:</span>
-                <span className="font-mono font-bold text-white">{block.totalAcres.toLocaleString()} ac</span>
+              <div className="pt-2 mt-2 border-t border-emerald-900/10 flex justify-between items-center text-xs">
+                <span className="text-emerald-950/55">Total Crop:</span>
+                <span className="font-mono font-bold text-emerald-950">{block.totalAcres.toLocaleString()} ac</span>
               </div>
             </div>
           );

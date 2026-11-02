@@ -43,31 +43,30 @@ interface ExecutionStep {
 
 const PRESET_PROMPTS = [
   {
-    title: '⚡ Re-balance Sangrur Cluster',
-    prompt: 'Evaluate 12 fields approaching 48-hr harvest window in Bhawanigarh block and execute OR-Tools VRP re-route for idle CHC balers.',
+    title: '⚡ Plan Sangrur cluster capacity',
+    prompt: 'Review a demo cluster approaching a harvest window and propose an OR-Tools-style route for registered machine capacity; live execution requires verified availability and approval.',
     agentSequence: ['vrp', 'sentinel', 'voice'],
   },
   {
-    title: '🛰️ NASA VIIRS Thermal Sweep',
-    prompt: 'Query NOAA-20 / Suomi-NPP VIIRS 375m active fire points at 18:30 UTC and intersect against registered customer polygons.',
+    title: '🛰️ Review thermal observations',
+    prompt: 'Query configured FIRMS / VIIRS observations and intersect them with registered field polygons. Treat matches as supporting thermal evidence, not proof of burn or non-burn.',
     agentSequence: ['sentinel', 'audit'],
   },
   {
-    title: '🌾 Multi-Offtake Dynamic Auction',
-    prompt: 'Run instant dynamic auction for 50 tonnes PR-126 straw (moisture 14%) between Craste Moulded Pulp (₹2,800/T) and Verbio CBG.',
+    title: '🌾 Compare illustrative offtake options',
+    prompt: 'Compare an illustrative 50-tonne PR-126 residue scenario against buyer requirements; no live bid or contract is created.',
     agentSequence: ['pricing', 'voice'],
   },
   {
-    title: '💸 <90s UPI Settlement Batch',
-    prompt: 'Verify weighment & geotagged bale photos for Field PB-SGR-01, trigger RazorpayX direct UPI payout to Gurpreet Singh, and dispatch Punjabi voice confirmation.',
+    title: '📋 Proof & status workflow (demo)',
+    prompt: 'Verify weighment & geotagged bale photos for Field PB-SGR-01, prepare a simulated operational record and Punjabi status confirmation; no payment provider is called.',
     agentSequence: ['audit', 'voice'],
   },
 ];
 
 export const AgenticCommandCenter: React.FC<{
-  onTriggerDemoBeat?: (beatNumber: number) => void;
   onNavigateTab?: (tab: string) => void;
-}> = ({ onTriggerDemoBeat, onNavigateTab }) => {
+}> = ({ onNavigateTab }) => {
   const [selectedPrompt, setSelectedPrompt] = useState(PRESET_PROMPTS[0].prompt);
   const [isExecuting, setIsExecuting] = useState(false);
   const [activeAgentId, setActiveAgentId] = useState<string>('vrp');
@@ -91,9 +90,9 @@ export const AgenticCommandCenter: React.FC<{
       id: 'step-2',
       agent: 'VRP Solver Agent',
       action: 'or_tools_vrp_time_window_solve()',
-      toolCall: 'vrp_solver.optimize(balers=4, fields=14, max_travel_radius_km=18)',
-      reasoning: 'Evaluated 4 subsidised CHC balers currently idle within 7.8km. Baler PB-11-CH-4902 finishes block clearance in 1.4h with 2.1km deadhead travel.',
-      output: 'Optimal route locked: Baler #1 arriving at 14:00 • Penalty exposure risk: 0.00%',
+      toolCall: 'vrp_solver.optimize(machines=4, fields=14, max_travel_radius_km=18)',
+      reasoning: 'Evaluated 4 registered CHC machine records in the demo; live availability must be confirmed. Baler PB-11-CH-4902 finishes block clearance in 1.4h with 2.1km deadhead travel.',
+      output: 'Route proposal: Baler #1 • ETA is planning-only until operator capacity is confirmed.',
       status: 'DONE',
       timestamp: '18:42:10.428',
     },
@@ -102,18 +101,18 @@ export const AgenticCommandCenter: React.FC<{
       agent: 'Dynamic Yield Agent',
       action: 'calculate_parametric_slot_quote()',
       toolCall: 'yield_pricing.quote(days_to_harvest=14, block_capacity=84%, acreage=5.2)',
-      reasoning: 'Early booking at 14 days pre-harvest qualifies for maximum forward-visibility subsidy. Base rate: ₹1,500/acre. Net quote: ₹7,800 with 100% money-back slot guarantee.',
-      output: 'Guaranteed rate: ₹1,500/acre • Late-sowing compensation backed: ₹7,500 penalty bond',
+      reasoning: 'Early booking at 14 days pre-harvest qualifies for maximum forward-visibility subsidy. Base rate: ₹1,500/acre. Net quote: ₹7,800 with capacity reservation is required before any confirmed slot.',
+      output: 'Indicative rate: ₹1,500/acre • Capacity reservation required before a confirmed slot',
       status: 'DONE',
       timestamp: '18:42:10.612',
     },
     {
       id: 'step-4',
-      agent: 'Voice NLP Agent',
-      action: 'dispatch_punjabi_whatsapp_and_audio()',
-      toolCall: 'whatsapp_cloud_api.send_template(phone="+919876543210", lang="pa_IN")',
-      reasoning: 'Generated bilingual Punjabi confirmation with slot time, driver contact, and locked UPI payout estimate. Synthesized 12-second voice note for offline listening.',
-      output: 'WhatsApp message & audio dispatched • Message ID: wamid.HBgLM... • Status: Read',
+      agent: 'Voice & Language Agent',
+      action: 'dispatch_punjabi_telegram_and_audio()',
+      toolCall: 'telegram_bot.send_farmer_update(lang="pa_IN")',
+      reasoning: 'Generated bilingual Punjabi confirmation with slot time, driver contact, and booking estimate; payment is disabled. Synthesized 12-second voice note for offline listening.',
+      output: 'Telegram/audio delivery is simulated; no provider message ID is claimed.',
       status: 'DONE',
       timestamp: '18:42:11.085',
     },
@@ -161,16 +160,16 @@ export const AgenticCommandCenter: React.FC<{
           {/* Agentic Badge */}
           <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-cyan-950/60 border border-cyan-500/40 text-cyan-300 text-xs font-mono mb-4 shadow-lg shadow-cyan-500/10">
             <span className="badge--dot" />
-            <span>AGENTIC DISPATCH NETWORK • STATE OF PUNJAB</span>
+            <span>BOUNDED OPERATIONS ASSISTANT</span>
             <span className="text-slate-500">|</span>
-            <span className="text-emerald-400 font-bold">5 COOPERATING AGENTS</span>
+            <span className="text-emerald-400 font-bold">HUMAN APPROVAL REQUIRED</span>
           </div>
 
           {/* Heading with Vector Underline */}
           <h1 className="text-3xl sm:text-5xl lg:text-6xl font-black tracking-tight text-white font-['Outfit'] leading-tight mb-4">
-            Zero Burning. Autonomous Dispatch.{' '}
+            Field readiness. Bounded dispatch planning.{' '}
             <span className="hero-word">
-              <span className="text-gradient">Guaranteed Slots.</span>
+              <span className="text-gradient">Capacity-aware Dispatch.</span>
               <svg
                 className="hero-underline"
                 viewBox="0 0 220 14"
@@ -196,7 +195,7 @@ export const AgenticCommandCenter: React.FC<{
           </h1>
 
           <p className="text-sm sm:text-base text-slate-300 max-w-2xl mx-auto leading-relaxed mb-6 font-['Plus_Jakarta_Sans']">
-            We don't buy balers and we don't own straw. Nirdhoom orchestrates Punjab's tens of thousands of idle, 50-80% subsidised CRM machines with constrained OR-Tools VRP, backed by a penalty bond, &lt;90s UPI settlement, and NASA FIRMS satellite audit.
+            We don't buy balers and we don't own straw. Nirdhoom is designed to coordinate a distributed CRM machinery network with constrained dispatch planning, operational evidence and a verification layer. Actual machine availability and capacity must be verified before any live booking. Payment and remote-sensing provider claims remain gated.
           </p>
 
           {/* 3D Agentic Neural Core Canvas */}
@@ -273,7 +272,7 @@ export const AgenticCommandCenter: React.FC<{
                 <span className="badge badge-amber text-[10px]">AWAITING SIGN-OFF</span>
               </div>
               <p className="text-xs text-slate-300">
-                Agent proposed 4 machine dispatches & ₹12,500 instant UPI payout. Verify before execution.
+                Agent proposed 4 machine dispatches and a demo operational workflow. Verify before execution; no payment provider is called.
               </p>
             </div>
           </div>
@@ -284,7 +283,7 @@ export const AgenticCommandCenter: React.FC<{
               className="px-4 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-xs cursor-pointer shadow-lg shadow-emerald-500/20 flex items-center gap-1.5"
             >
               <CheckCircle2 className="w-4 h-4" />
-              <span>Authorize Batch</span>
+              <span>Approve demo proposal</span>
             </button>
             <button
               onClick={() => setHumanApprovalState('NONE')}
@@ -302,10 +301,10 @@ export const AgenticCommandCenter: React.FC<{
             <CheckCircle2 className="w-6 h-6 text-emerald-400" />
             <div>
               <span className="font-bold text-emerald-300 text-sm">
-                Tranche Authorized & Signed
+                Demo proposal approved
               </span>
               <p className="text-xs text-slate-300">
-                Dispatches routed to field balers; UPI ref #UPI9982401 queued on NPCI switch.
+                Dispatch proposal approved for the demo; no payment provider is called.
               </p>
             </div>
           </div>
@@ -354,16 +353,16 @@ export const AgenticCommandCenter: React.FC<{
                   id: 'pricing',
                   name: 'Dynamic Yield Agent',
                   tech: 'Parametric Insurance Algorithmic Curve',
-                  desc: 'Acreage-based pricing, early-booking subsidies, penalty bond underwriting.',
+                  desc: 'Indicative service pricing and capacity planning; no penalty or subsidy promise in this release.',
                   state: 'Active',
                   color: 'text-blue-400 border-blue-500/30 bg-blue-950/20',
                   badge: 'badge-cyan',
                 },
                 {
                   id: 'voice',
-                  name: 'Voice NLP Agent',
-                  tech: 'WhatsApp Cloud API + Punjabi IVR',
-                  desc: 'Missed-call callback, native Punjabi speech, locked slot confirmation.',
+                  name: 'Voice & Language Agent',
+                  tech: 'Telegram + Punjabi IVR adapters',
+                  desc: 'Local-language assistance and booking/status handoff; payment remains disabled.',
                   state: 'Standby',
                   color: 'text-amber-400 border-amber-500/30 bg-amber-950/20',
                   badge: 'badge-amber',
@@ -372,7 +371,7 @@ export const AgenticCommandCenter: React.FC<{
                   id: 'audit',
                   name: 'Verification & Registry Agent',
                   tech: 'NASA FIRMS VIIRS 375m + ST_Contains',
-                  desc: 'Nightly thermal audit, zero-burn proof, Gold Standard VM0042 issuance.',
+                  desc: 'Nightly thermal audit, zero-burn proof, future methodology/registry pathway after measurement and independent verification.',
                   state: 'Active',
                   color: 'text-teal-400 border-teal-500/30 bg-teal-950/20',
                   badge: 'badge-emerald',
@@ -411,8 +410,8 @@ export const AgenticCommandCenter: React.FC<{
               <span className="text-[10px] text-slate-500">14 constraints solved</span>
             </div>
             <div className="glass-panel p-3 rounded-xl border-cyan-500/20">
-              <span className="text-[10px] font-mono text-slate-400 uppercase">UPI Disbursal SLA</span>
-              <div className="text-xl font-black text-cyan-300 font-mono mt-0.5">42 sec</div>
+              <span className="text-[10px] font-mono text-slate-400 uppercase">Settlement readiness</span>
+              <div className="text-xl font-black text-cyan-300 font-mono mt-0.5">Demo only</div>
               <span className="text-[10px] text-slate-500">&lt;90s contractual SLA</span>
             </div>
           </div>

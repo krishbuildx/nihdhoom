@@ -1,4 +1,4 @@
-// Wedge 3: Pricing Mechanism - Price by time, not by weight.
+// Pricing prototype: server-side booking RPC is authoritative in live mode; this helper is UI/demo logic.
 // "Yield-manage the window. Register 3 weeks pre-harvest, get the top rate.
 // Day-of walk-in, get the floor rate. This is airline pricing applied to a 30-day supply spike."
 
@@ -7,7 +7,7 @@ export interface PricingQuote {
   ratePerAcre: number;
   totalPayout: number;
   penaltyCoverage: number;
-  guaranteedHours: number;
+  planningWindowHours: number;
   tierName: string;
   tierBadgeColor: string;
   urgencyDiscountOrBonusPct: number;
@@ -55,8 +55,8 @@ export function calculateDynamicQuote(acreage: number, daysToHarvest: number): P
 
   const totalPayout = Math.round(ratePerAcre * acreage);
 
-  // Late sowing penalty: Covers PAU research-backed wheat yield loss (1.5 quintals/acre @ ₹2,275 MSP = ~₹3,400/acre)
-  // Parametric guarantee: If delayed >48 hours, automatic UPI penalty transfer of ₹1,200/acre
+  // Illustrative late-sowing impact coverage only; this is not a payment promise.
+  // No automatic transfer or settlement occurs in the current release.
   const penaltyCoverage = Math.round(Math.max(2500, acreage * 1250));
 
   return {
@@ -64,7 +64,7 @@ export function calculateDynamicQuote(acreage: number, daysToHarvest: number): P
     ratePerAcre,
     totalPayout,
     penaltyCoverage,
-    guaranteedHours: 48,
+    planningWindowHours: 48,
     tierName,
     tierBadgeColor,
     urgencyDiscountOrBonusPct: urgencyBonus,

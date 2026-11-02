@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Field, Machine, LatLng } from '../../types';
-import { runVRPOptimizer, VRPDispatchResult } from '../../utils/vrpOptimizer';
+import { runVRPOptimizer, fromServerDispatchPlan, VRPDispatchResult } from '../../utils/vrpOptimizer';
+import { supabase } from '../../lib/supabase';
 import { 
   Cpu, 
   CheckCircle2, 
@@ -19,6 +20,8 @@ interface VRPDispatchPanelProps {
   machines: Machine[];
   onRouteSelected: (route: LatLng[]) => void;
   onSelectField: (field: Field) => void;
+  /** Sample or demo records: the plan runs locally and never calls the dispatch service. */
+  demoMode?: boolean;
 }
 
 export const VRPDispatchPanel: React.FC<VRPDispatchPanelProps> = ({
@@ -26,26 +29,71 @@ export const VRPDispatchPanel: React.FC<VRPDispatchPanelProps> = ({
   machines,
   onRouteSelected,
   onSelectField,
+  demoMode = false,
 }) => {
   const [optimizerResult, setOptimizerResult] = useState<VRPDispatchResult | null>(() =>
     runVRPOptimizer(fields, machines)
   );
+  // Sample records can change after mount (the sample network switches on once live data is found empty).
+  useEffect(() => {
+    if (demoMode) setOptimizerResult(runVRPOptimizer(fields, machines));
+  }, [demoMode, fields, machines]);
   const [isSolving, setIsSolving] = useState(false);
+  const [dispatchError, setDispatchError] = useState('');
   const [selectedMachineId, setSelectedMachineId] = useState<string>(machines[0]?.id || '');
 
-  const handleRunOptimizer = () => {
+  const handleRunOptimizer = async () => {
     setIsSolving(true);
-    setTimeout(() => {
-      const res = runVRPOptimizer(fields, machines);
-      setOptimizerResult(res);
-      setIsSolving(false);
-
-      // Default select first machine's route
-      if (res.assignments.length > 0) {
-        onRouteSelected(res.assignments[0].routeCoordinates);
-        setSelectedMachineId(res.assignments[0].machineId);
+    setDispatchError('');
+    try {
+      if (supabase && !demoMode && import.meta.env.VITE_NIRDHOOM_DEMO_MODE !== 'true') {
+        const { data: sessionData } = await supabase.auth.getSession();
+        const token = sessionData.session?.access_token;
+        if (!token) throw new Error('Sign in with an authorized dispatcher account before running live dispatch.');
+        const started = performance.now();
+        const response = await fetch('/api/dispatch', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({
+            fields: fields.map((f) => ({
+              id: f.id,
+              lat: f.center.lat,
+              lng: f.center.lng,
+              acres: f.acreage,
+              deadline: f.clearance_deadline,
+            })),
+            machines: machines.map((m) => ({
+              id: m.id,
+              lat: m.current_location.lat,
+              lng: m.current_location.lng,
+              capacity_acres_day: m.capacity_acres_day,
+              status: m.status,
+            })),
+          }),
+        });
+        const plan = await response.json();
+        if (!response.ok) throw new Error(plan?.error || 'Dispatch service rejected the request.');
+        const res = fromServerDispatchPlan(plan, fields, machines, Math.round(performance.now() - started));
+        setOptimizerResult(res);
+        if (res.assignments.length > 0) {
+          onRouteSelected(res.assignments[0].routeCoordinates);
+          setSelectedMachineId(res.assignments[0].machineId);
+        }
+      } else {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        const res = runVRPOptimizer(fields, machines);
+        setOptimizerResult(res);
+        if (res.assignments.length > 0) {
+          onRouteSelected(res.assignments[0].routeCoordinates);
+          setSelectedMachineId(res.assignments[0].machineId);
+        }
       }
-    }, 600);
+    } catch (error) {
+      setOptimizerResult(null);
+      setDispatchError(error instanceof Error ? error.message : 'Unable to run dispatch planner. Try again or review the dispatch inputs.');
+    } finally {
+      setIsSolving(false);
+    }
   };
 
   const handleSelectMachine = (machineId: string) => {
@@ -57,25 +105,25 @@ export const VRPDispatchPanel: React.FC<VRPDispatchPanelProps> = ({
   };
 
   return (
-    <div className="glass-panel p-4 flex flex-col gap-4">
+    <div className="tone-adapt glass-panel p-4 flex flex-col gap-4">
       {/* Panel Header & Run Action */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
+      <div className="flex flex-col items-start justify-between gap-3 border-b border-slate-800 pb-4">
         <div>
           <div className="flex items-center gap-2">
             <Cpu className="w-5 h-5 text-emerald-400" />
             <h3 className="font-bold text-base text-white tracking-tight">
-              OR-Tools VRP Dispatch Engine (Time-Windows)
+              Capacity Match & Route Planner
             </h3>
           </div>
           <p className="text-xs text-slate-400 mt-0.5">
-            Constrained scheduling across idle CRM machinery to clear fields inside 48h guarantee window
+            Match available machine capacity to field demand, then optimise the route. Live capacity is authoritative only when returned by the connected service.
           </p>
         </div>
 
         <button
           onClick={handleRunOptimizer}
           disabled={isSolving}
-          className={`flex items-center gap-2 px-4 py-2 rounded-lg font-bold text-xs shadow-lg transition-all cursor-pointer ${
+          className={`flex w-full items-center justify-center gap-2 px-4 py-2.5 rounded-xl font-bold text-sm shadow-sm transition-all cursor-pointer ${
             isSolving
               ? 'bg-slate-700 text-slate-300'
               : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-500/20 active:scale-95'
@@ -89,66 +137,76 @@ export const VRPDispatchPanel: React.FC<VRPDispatchPanelProps> = ({
           ) : (
             <>
               <Play className="w-4 h-4 fill-current" />
-              <span>Re-Run VRP Optimizer</span>
+              <span>{optimizerResult?.source === 'server-ortools' ? 'Re-run live OR-Tools plan' : optimizerResult?.source === 'server-fallback' ? 'Re-run server fallback' : 'Run dispatch planner'}</span>
             </>
           )}
         </button>
       </div>
 
+      {dispatchError && (
+        <div role="alert" className="rounded-xl border border-red-500/30 bg-red-950/30 px-3.5 py-3 text-sm text-red-200 flex items-start gap-2">
+          <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5 text-red-300" />
+          <div>
+            <strong className="block text-red-100">Dispatch planner could not run</strong>
+            <span className="text-red-200/80">{dispatchError}</span>
+          </div>
+        </div>
+      )}
+
       {/* Real-time Optimization Telemetry Tiles */}
       {optimizerResult && (
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-2.5">
-          <div className="bg-slate-900/90 border border-emerald-500/30 rounded-lg p-2.5">
-            <div className="flex items-center justify-between text-slate-400 text-[11px]">
+        <div className="grid grid-cols-2 gap-2.5">
+          <div className="ui-stat is-green !p-3">
+            <div className="ui-stat-label flex items-center justify-between">
               <span>Scheduled Load</span>
               <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
             </div>
-            <div className="text-lg font-extrabold text-white mt-1 font-mono">
+            <div className="ui-stat-value !text-[24px]">
               {optimizerResult.totalAcresScheduled}{' '}
               <span className="text-xs text-emerald-400 font-normal">acres</span>
             </div>
             <div className="text-[10px] text-emerald-400 font-semibold mt-0.5">
-              100% Inside 48h Window
+              {optimizerResult.unassignedFieldIds.length === 0 ? 'All eligible fields assigned' : `${optimizerResult.unassignedFieldIds.length} field(s) unassigned`}
             </div>
           </div>
 
-          <div className="bg-slate-900/90 border border-emerald-500/30 rounded-lg p-2.5">
-            <div className="flex items-center justify-between text-slate-400 text-[11px]">
+          <div className="ui-stat is-green !p-3">
+            <div className="ui-stat-label flex items-center justify-between">
               <span>Deadhead Travel</span>
               <Route className="w-3.5 h-3.5 text-cyan-400" />
             </div>
-            <div className="text-lg font-extrabold text-cyan-300 mt-1 font-mono">
+            <div className="ui-stat-value !text-[24px]">
               {optimizerResult.totalDeadheadKm}{' '}
               <span className="text-xs text-slate-400 font-normal">km</span>
             </div>
             <div className="text-[10px] text-cyan-400 font-semibold mt-0.5">
-              Saved {optimizerResult.deadheadSavedKm} km (-43%)
+              {optimizerResult.source === 'server-ortools' ? 'Server solver result' : 'Local heuristic estimate'}
             </div>
           </div>
 
-          <div className="bg-slate-900/90 border border-amber-500/30 rounded-lg p-2.5">
-            <div className="flex items-center justify-between text-slate-400 text-[11px]">
-              <span>Penalty Risk Dropped</span>
+          <div className="ui-stat is-wheat !p-3">
+            <div className="ui-stat-label flex items-center justify-between">
+              <span>Unassigned Work</span>
               <ShieldAlert className="w-3.5 h-3.5 text-amber-400" />
             </div>
-            <div className="text-lg font-extrabold text-amber-300 mt-1 font-mono">
-              ₹{optimizerResult.totalPenaltyPrevented.toLocaleString()}
+            <div className="ui-stat-value !text-[24px]">
+              {optimizerResult.unassignedFieldIds.length}
             </div>
             <div className="text-[10px] text-emerald-400 font-semibold mt-0.5">
-              Zero Default Liability
+              Unassigned fields
             </div>
           </div>
 
-          <div className="bg-slate-900/90 border border-slate-800 rounded-lg p-2.5">
-            <div className="flex items-center justify-between text-slate-400 text-[11px]">
+          <div className="ui-stat !p-3">
+            <div className="ui-stat-label flex items-center justify-between">
               <span>Fleet Utilisation</span>
               <Percent className="w-3.5 h-3.5 text-emerald-400" />
             </div>
-            <div className="text-lg font-extrabold text-white mt-1 font-mono">
+            <div className="ui-stat-value !text-[24px]">
               {optimizerResult.fleetUtilizationPct}%
             </div>
             <div className="text-[10px] text-slate-400 mt-0.5">
-              Solved in {optimizerResult.solverExecutionTimeMs} ms
+              {optimizerResult.source === 'server-ortools' ? 'OR-Tools service' : 'Local heuristic'} • {optimizerResult.solverExecutionTimeMs} ms
             </div>
           </div>
         </div>
@@ -157,29 +215,25 @@ export const VRPDispatchPanel: React.FC<VRPDispatchPanelProps> = ({
       {/* Machine Fleet Schedule Cards */}
       <div className="flex flex-col gap-2">
         <div className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center justify-between">
-          <span>Active Subsidised Balers & Sequenced Routes</span>
+          <span>Machine matches & sequenced routes</span>
           <span className="text-[11px] text-emerald-400 font-normal">
-            Click machine to highlight live GPS route on map
+            Click a match to inspect why the route was selected
           </span>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-1 gap-2.5">
           {optimizerResult?.assignments.map((assign) => {
             const isSelected = selectedMachineId === assign.machineId;
             return (
               <div
                 key={assign.machineId}
                 onClick={() => handleSelectMachine(assign.machineId)}
-                className={`p-3 rounded-lg border transition-all cursor-pointer ${
-                  isSelected
-                    ? 'bg-slate-900/95 border-emerald-500 ring-1 ring-emerald-500 shadow-md'
-                    : 'bg-slate-900/60 border-slate-800 hover:border-slate-700'
-                }`}
+                className={`dispatch-match ${isSelected ? 'is-selected' : ''}`}
               >
                 <div className="flex items-center justify-between mb-1.5">
                   <div className="flex items-center gap-2">
                     <span className="text-base">🚜</span>
-                    <span className="font-bold text-sm text-white">
+                    <span className="text-[14px] font-bold text-[var(--ink)]">
                       {assign.machineName}
                     </span>
                   </div>
@@ -194,7 +248,7 @@ export const VRPDispatchPanel: React.FC<VRPDispatchPanelProps> = ({
                 </div>
 
                 {/* Step sequence breakdown */}
-                <div className="bg-slate-950/70 p-2 rounded border border-slate-800/80 text-[11px] flex flex-col gap-1">
+                <div className="dispatch-route">
                   {assign.sequenceDescriptions.map((desc, idx) => (
                     <div key={idx} className="flex items-start gap-1.5 text-slate-300">
                       <span className="text-emerald-500 font-bold shrink-0">{idx + 1}.</span>

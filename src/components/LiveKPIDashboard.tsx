@@ -57,43 +57,21 @@ const AnimatedCounter: React.FC<AnimatedCounterProps> = ({
 
 interface LiveKPIDashboardProps {
   acresScheduled?: number;
-  totalPayoutInr?: number;
   co2Avoided?: number;
   firmsZeroBurnCount?: number;
   activeMachines?: number;
   fireEventsOutsideCount?: number;
+  demoMode?: boolean;
 }
 
 export const LiveKPIDashboard: React.FC<LiveKPIDashboardProps> = ({
-  acresScheduled = 88.4,
-  totalPayoutInr = 128150,
-  co2Avoided = 72.6,
-  firmsZeroBurnCount = 5,
-  activeMachines = 4,
-  fireEventsOutsideCount = 8,
+  acresScheduled = 0,
+  co2Avoided = 0,
+  firmsZeroBurnCount = 0,
+  activeMachines = 0,
+  fireEventsOutsideCount = 0,
+  demoMode = false,
 }) => {
-  const [upiFlash, setUpiFlash] = useState(false);
-  const [upiMessage, setUpiMessage] = useState('');
-
-  const upiFlashes = [
-    '₹5,075 CREDITED → Gurpreet Singh Brar',
-    '₹7,250 CREDITED → Harinder Singh Dhillon',
-    '₹4,350 CREDITED → Manpreet Kaur Sandhu',
-    '₹6,500 CREDITED → Kuldeep Singh Cheema',
-  ];
-  const flashRef = useRef(0);
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      const msg = upiFlashes[flashRef.current % upiFlashes.length];
-      flashRef.current += 1;
-      setUpiMessage(msg);
-      setUpiFlash(true);
-      setTimeout(() => setUpiFlash(false), 2200);
-    }, 7000);
-    return () => clearInterval(interval);
-  }, []);
-
   const kpiCards = [
     {
       label: 'Acres Scheduled',
@@ -104,24 +82,24 @@ export const LiveKPIDashboard: React.FC<LiveKPIDashboardProps> = ({
       color: 'text-emerald-400',
       borderColor: 'border-emerald-500/30',
       bgColor: 'bg-emerald-500/5',
-      sub: '100% inside 48h window',
+      sub: demoMode ? 'Illustrative demo metric' : 'From connected field records',
       subColor: 'text-emerald-400',
     },
     {
-      label: 'UPI Settled Today',
-      value: totalPayoutInr,
-      prefix: '₹',
+      label: 'Payments',
+      value: 0,
+      prefix: '',
       suffix: '',
       decimals: 0,
       icon: IndianRupee,
       color: 'text-amber-400',
       borderColor: 'border-amber-500/30',
       bgColor: 'bg-amber-500/5',
-      sub: '< 90s per settlement',
+      sub: 'Disabled in this release',
       subColor: 'text-amber-400',
     },
     {
-      label: 'CO₂e Avoided',
+      label: demoMode ? 'CO₂e planning estimate' : 'CO₂e recorded',
       value: co2Avoided,
       suffix: ' t',
       decimals: 1,
@@ -129,23 +107,23 @@ export const LiveKPIDashboard: React.FC<LiveKPIDashboardProps> = ({
       color: 'text-teal-400',
       borderColor: 'border-teal-500/30',
       bgColor: 'bg-teal-500/5',
-      sub: 'Verra VM0042 eligible',
+      sub: demoMode ? 'Methodology not configured' : 'Methodology-dependent',
       subColor: 'text-teal-400',
     },
     {
-      label: 'FIRMS 0-Burn Fields',
+      label: demoMode ? 'Thermal evidence examples' : 'Thermal evidence',
       value: firmsZeroBurnCount,
-      suffix: ' / 5',
+      suffix: demoMode ? ' examples' : '',
       decimals: 0,
       icon: ShieldCheck,
       color: 'text-emerald-400',
       borderColor: 'border-emerald-500/40',
       bgColor: 'bg-emerald-950/30',
-      sub: 'NASA VIIRS verified',
+      sub: demoMode ? 'Not a non-burn certificate' : 'Supporting observations',
       subColor: 'text-emerald-300',
     },
     {
-      label: 'Active Balers',
+      label: 'Active Machines',
       value: activeMachines,
       suffix: ' units',
       decimals: 0,
@@ -153,7 +131,7 @@ export const LiveKPIDashboard: React.FC<LiveKPIDashboardProps> = ({
       color: 'text-cyan-400',
       borderColor: 'border-cyan-500/30',
       bgColor: 'bg-cyan-500/5',
-      sub: 'CHC subsidised fleet',
+      sub: 'Registered machine capacity',
       subColor: 'text-cyan-400',
     },
     {
@@ -173,7 +151,7 @@ export const LiveKPIDashboard: React.FC<LiveKPIDashboardProps> = ({
   return (
     <div className="w-full flex flex-col gap-3 mb-1">
       {/* Hero Telemetry Strip */}
-      <div className="relative overflow-hidden rounded-2xl border border-emerald-500/20 bg-gradient-to-r from-slate-950 via-slate-900/90 to-slate-950 shadow-xl shadow-emerald-500/5 p-4 sm:p-5">
+      <div className="ops-telemetry-strip relative overflow-hidden rounded-2xl border p-4 sm:p-5">
         {/* Animated background glow blobs */}
         <div className="absolute inset-0 pointer-events-none overflow-hidden rounded-2xl">
           <div className="absolute -top-20 -left-20 w-80 h-80 rounded-full bg-emerald-500/5 blur-3xl animate-pulse" />
@@ -192,35 +170,31 @@ export const LiveKPIDashboard: React.FC<LiveKPIDashboardProps> = ({
             </div>
             <div>
               <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-sm font-black text-white font-['Outfit'] tracking-tight">
-                  NIRDHOOM Live Ops Telemetry
+                <span className="text-sm font-black tracking-tight">
+                  NIRDHOOM Ops Telemetry
                 </span>
-                <span className="flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-bold">
+                <span className="telemetry-badge flex items-center gap-1 text-[10px] px-2 py-0.5 rounded-full border font-bold">
                   <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse inline-block" />
-                  NOAA-20 LIVE
+                  FIRMS / VIIRS layer
                 </span>
               </div>
-              <p className="text-[11px] text-slate-400 mt-0.5">
-                Punjab Malwa Hotspot · Sangrur Cluster · Oct–Nov 2026 Season
+              <p className="text-[11px] telemetry-muted mt-0.5">
+                Punjab Malwa · connected operational records
               </p>
             </div>
           </div>
 
-          {/* UPI flash notification */}
+          {/* Payment status */}
           <div
-            className={`flex items-center gap-2 px-3.5 py-2 rounded-xl border transition-all duration-500 min-w-[220px] ${
-              upiFlash
-                ? 'bg-amber-500/20 border-amber-500/60 shadow-lg shadow-amber-500/20'
-                : 'bg-slate-900/80 border-slate-700/50'
-            }`}
+            className="telemetry-payment flex items-center gap-2 px-3.5 py-2 rounded-xl min-w-[220px]"
           >
-            <Zap className={`w-4 h-4 shrink-0 ${upiFlash ? 'text-amber-400' : 'text-slate-500'}`} />
+            <Zap className="w-4 h-4 shrink-0 text-slate-500" />
             <div className="text-xs overflow-hidden">
-              <div className={`font-bold truncate ${upiFlash ? 'text-amber-300' : 'text-slate-400'}`}>
-                {upiFlash ? upiMessage : 'UPI SLA: < 90s guarantee'}
+              <div className="font-bold truncate text-slate-400">
+                Payments disabled in this release
               </div>
               <div className="text-slate-500 text-[10px]">
-                {upiFlash ? 'Settlement completed · Soundbox alert sent' : 'Zero weight dispute · Per-acre pricing'}
+                Payment provider is not connected
               </div>
             </div>
           </div>

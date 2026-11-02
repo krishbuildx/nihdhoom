@@ -1,32 +1,46 @@
 {
-  "name": "nirdhoom",
+  "name": "nirdhoom-field-network",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.4.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
-    "lint": "oxlint",
-    "preview": "vite preview"
+    "build": "vite build",
+    "preview": "vite preview",
+    "audit": "node scripts_validate.mjs && node scripts_integrity_validate.mjs",
+    "syntaxcheck": "tsc -b",
+    "test": "node --test tests/*.test.mjs",
+    "release:check": "npm run syntaxcheck && npm run audit && npm test && npm run build",
+    "telegram:setup": "node scripts/telegram-setup.mjs",
+    "doctor": "node scripts/doctor.mjs",
+    "db:bundle": "node scripts/db-bundle.mjs"
   },
   "dependencies": {
-    "@types/canvas-confetti": "^1.9.0",
-    "@types/leaflet": "^1.9.22",
-    "@types/three": "^0.186.0",
-    "canvas-confetti": "^1.9.4",
-    "leaflet": "^1.9.4",
-    "lucide-react": "^1.48.0",
-    "react": "^19.2.8",
-    "react-dom": "^19.2.8",
-    "three": "^0.186.1"
+    "@supabase/supabase-js": "2.57.0",
+    "@vitejs/plugin-react": "6.1.1",
+    "@tailwindcss/vite": "^4.1.0",
+    "vite": "8.3.0",
+    "typescript": "6.0.2",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "lucide-react": "1.48.0",
+    "three": "0.186.1",
+    "leaflet": "1.9.4",
+    "canvas-confetti": "1.9.4",
+    "motion": "^12.23.21",
+    "@hugeicons/react": "^1.1.10",
+    "@hugeicons/core-free-icons": "^4.3.3"
   },
   "devDependencies": {
-    "@types/node": "^24.13.3",
-    "@types/react": "^19.2.18",
-    "@types/react-dom": "^19.2.7",
-    "@vitejs/plugin-react": "^6.1.1",
-    "oxlint": "^1.81.0",
-    "typescript": "~6.0.2",
-    "vite": "^8.3.0"
+    "@types/node": "24.13.3",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.7",
+    "@types/three": "0.186.0",
+    "@types/leaflet": "1.9.22",
+    "@types/canvas-confetti": "1.9.0",
+    "oxlint": "1.85.0"
+  },
+  "engines": {
+    "node": "24.x"
   }
 }

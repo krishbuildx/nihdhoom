@@ -5,6 +5,9 @@ export type PaddyVariety = 'PR-126' | 'Pusa-44' | 'Basmati-1509' | 'Basmati-1121
 
 export type FieldStatus = 
   | 'REGISTERED' 
+  | 'BOOKED'
+  | 'MACHINE_ASSIGNED'
+  | 'ON_THE_WAY'
   | 'SCHEDULED' 
   | 'BALING_IN_PROGRESS' 
   | 'CLEARED_PENDING_AUDIT' 
@@ -35,8 +38,28 @@ export interface LatLng {
   lng: number;
 }
 
+
+export type ProvenanceStatus = 'DECLARED' | 'MAPPED' | 'REFERENCE_MATCHED' | 'FIELD_VERIFIED';
+
+export type ProvenanceSource = 'FARMER_DECLARATION' | 'CADASTRAL_REFERENCE' | 'GPS_OPERATOR' | 'SYSTEM_DERIVED' | 'UNKNOWN';
+
+export interface FieldProvenance {
+  acreage: ProvenanceSource;
+  geometry: ProvenanceSource;
+  khasra: ProvenanceSource;
+  crop: ProvenanceSource;
+  harvest_date: ProvenanceSource;
+  status: ProvenanceStatus;
+  verified_by?: string;
+  verified_at?: string;
+  verification_method?: string;
+  notes?: string;
+}
+
 export interface Field {
   id: string;
+  /** Supabase UUID for live joins/RPCs; UI may use an external field identifier in id. */
+  dbId?: string;
   farmer_id: string;
   farmer_name: string;
   farmer_phone: string;
@@ -57,6 +80,10 @@ export interface Field {
   qr_lot_code?: string;
   payout_amount?: number;
   is_verified_non_burn?: boolean;
+  provenance?: FieldProvenance;
+  job_id?: string;
+  residue_lot_id?: string;
+  last_operational_update_at?: string;
 }
 
 export interface PickupRequest {
@@ -81,6 +108,11 @@ export interface Machine {
   operator_name: string;
   operator_phone: string;
   capacity_acres_day: number;
+  tractor_hp_required?: number;
+  residue_types?: string[];
+  operating_conditions?: string;
+  capability_source?: string;
+  capability_source_date?: string;
   current_location: LatLng;
   home_chc: string;
   status: 'IDLE' | 'EN_ROUTE' | 'BALING' | 'MAINTENANCE';
@@ -101,6 +133,41 @@ export interface Job {
   route_polyline?: LatLng[];
   deadhead_km: number;
   estimated_hours: number;
+}
+
+export type ResidueLotStatus =
+  | 'AVAILABLE'
+  | 'VERIFIED'
+  | 'VERIFIED_NON_BURN'
+  | 'ALLOCATED'
+  | 'POOLED'
+  | 'DELIVERED';
+
+export interface ResidueLot {
+  id: string;
+  field_id: string;
+  farmer_id: string;
+  crop: string;
+  residue_type: string;
+  estimated_quantity_tonnes?: number | null;
+  quantity_tonnes?: number | null;
+  verified_quantity_tonnes?: number | null;
+  moisture_pct?: number | null;
+  quality_grade?: string | null;
+  quality_notes?: string | null;
+  bale_type?: string | null;
+  harvest_date?: string | null;
+  ready_from?: string | null;
+  pickup_deadline?: string | null;
+  machine_id?: string | null;
+  status: string;
+  geometry_provenance: Record<string, unknown>;
+  verification_source?: string | null;
+  verified_at?: string | null;
+  assigned_buyer_id?: string | null;
+  qr_code?: string | null;
+  baled_at?: string | null;
+  created_at?: string;
 }
 
 export interface Lot {
@@ -126,6 +193,53 @@ export interface StorageYard {
   capacity_tonnes: number;
   current_load: number;
   moisture_alert: boolean;
+  incoming_tonnes?: number;
+  status?: 'AVAILABLE' | 'WATCH' | 'FULL';
+  provenance?: 'DEMO' | 'LIVE_RECORD';
+}
+
+export type ResidueOperationPriority = 'CRITICAL' | 'HIGH' | 'WATCH' | 'NORMAL';
+
+export interface ResidueException {
+  id: string;
+  severity: 'CRITICAL' | 'HIGH' | 'WATCH';
+  kind: 'PICKUP_OVERDUE' | 'MACHINE_SHORTFALL' | 'UNWEIGHED_LOT' | 'UNMATCHED_DEMAND' | 'YARD_CAPACITY' | 'STALE_GPS' | 'WEATHER_CAUTION';
+  title: string;
+  detail: string;
+  field_id?: string;
+  machine_id?: string;
+  action: string;
+}
+
+export interface MachineCapacityRecommendation {
+  machine_id: string;
+  field_id: string;
+  score: number;
+  reason: string;
+  capacity_acres_day: number;
+  distance_km?: number;
+  available: boolean;
+}
+
+export interface BuyerDemandCoverage {
+  buyer_id: string;
+  buyer_name: string;
+  required_tonnes: number;
+  committed_tonnes: number;
+  verified_tonnes: number;
+  delivered_tonnes: number;
+  coverage_pct: number;
+  status: 'OPEN' | 'WATCH' | 'COVERED';
+}
+
+export interface ResidueOperationSummary {
+  ready_tonnes: number;
+  verified_tonnes: number;
+  demand_tonnes: number;
+  demand_coverage_pct: number;
+  machine_capacity_acres_day: number;
+  fields_at_risk: number;
+  exceptions: ResidueException[];
 }
 
 export interface Buyer {
@@ -133,6 +247,7 @@ export interface Buyer {
   name: string;
   type: BuyerType;
   location_name: string;
+  location?: LatLng;
   price_per_tonne: number;
   moisture_ceiling: number;
   silica_tolerance: string;
@@ -164,7 +279,11 @@ export interface BurnEvent {
   detected_at: string;
   confidence: number; // 0-100%
   brightness_temp_kelvin: number;
-  satellite: 'VIIRS Suomi-NPP' | 'VIIRS NOAA-20';
+  satellite: string;
+  sensor?: string;
+  product?: string;
+  source_version?: string;
+  observation_role?: 'SUPPORTING_EVIDENCE';
   matched_field_id: string | null;
   nearest_village: string;
   is_registered_customer: boolean;
@@ -182,8 +301,8 @@ export interface NonBurnCertificate {
   paddy_variety: PaddyVariety;
   clearance_timestamp: string;
   firms_audit_pass: boolean;
-  firms_fires_detected_in_polygon: 0;
-  firms_buffer_meters: 50;
+  firms_fires_detected_in_polygon: number;
+  firms_buffer_meters: number;
   ndvi_pre_harvest: number;
   ndvi_post_clearance: number;
   co2e_avoided_tonnes: number;
@@ -193,4 +312,5 @@ export interface NonBurnCertificate {
   sha256_hash: string;
   issued_at: string;
   verra_vm0042_eligible: boolean;
+  certificate_status: 'ILLUSTRATIVE_DEMO' | 'VERIFIED_INTERNAL';
 }

@@ -1,7 +1,45 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
 import { Field, Machine, BurnEvent, StorageYard, Buyer, LatLng } from '../../types';
-import { Layers, Eye, Flame, Shield, MapPin, Truck, RefreshCw } from 'lucide-react';
+import { supabase } from '../../lib/supabase';
+import { Layers, Flame, MapPin, PackageCheck, Route, CloudSun, Building2, ChevronDown, Minus, Plus, LocateFixed, ListFilter, Search, X } from 'lucide-react';
+import { FIELD_STAGES, STAGE_META, fieldRing, fieldStage, type FieldStage } from '../../lib/fieldStatus';
+import { buyerSymbol, fireSymbol, machineStatusLabel, machineSymbol, residueSymbol, timeAgo, yardSymbol } from '../../lib/mapSymbols';
+import { INITIAL_BUYERS, INITIAL_MACHINES, INITIAL_STORAGE_YARDS, MOCK_FIRMS_FIRE_EVENTS } from '../../data/mockData';
+import { SAMPLE_CLUSTERS } from '../../data/sampleNetwork';
+import { useAppLanguage } from '../../i18n/LanguageContext';
+
+// Leaflet popup content is HTML, so database/user-controlled strings must be escaped.
+const escapeHtml = (value: unknown): string => String(value ?? '')
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;')
+  .replace(/'/g, '&#39;');
+
+/** The field with the most neighbours within 35 km, plus those neighbours: the densest area to open on. */
+function densestGroup<T extends { lat: number; lng: number }>(points: T[]): T[] {
+  if (points.length <= 2) return points;
+  const km = (a: T, b: T) => {
+    const dLat = (a.lat - b.lat) * 111.32;
+    const dLng = (a.lng - b.lng) * 111.32 * Math.cos((a.lat * Math.PI) / 180);
+    return Math.hypot(dLat, dLng);
+  };
+  let best: T[] = points;
+  let bestCount = 0;
+  points.forEach((p) => {
+    const group = points.filter((q) => km(p, q) <= 35);
+    if (group.length > bestCount) { best = group; bestCount = group.length; }
+  });
+  return best;
+}
+
+// Popups pan clear of the floating map controls (GPS badge, layers, zoom, legend).
+L.Popup.mergeOptions({
+  autoPanPaddingTopLeft: L.point(24, 72),
+  autoPanPaddingBottomRight: L.point(64, 120),
+  maxWidth: 300,
+});
 
 interface OpsMapProps {
   fields: Field[];
@@ -13,33 +51,128 @@ interface OpsMapProps {
   onSelectField: (field: Field) => void;
   activeRoutePolyline?: LatLng[];
   highlightFirmsFire?: boolean;
+  demoMode?: boolean;
+  /** Open the field finder panel on first render (Track My Machine). */
+  defaultFieldListOpen?: boolean;
 }
 
 export const OpsMap: React.FC<OpsMapProps> = ({
   fields,
-  machines,
-  fireEvents,
-  storageYards,
-  buyers,
+  machines: machinesProp,
+  fireEvents: fireEventsProp,
+  storageYards: storageYardsProp,
+  buyers: buyersProp,
   selectedField,
   onSelectField,
   activeRoutePolyline,
   highlightFirmsFire = true,
+  demoMode = false,
+  defaultFieldListOpen = false,
 }) => {
+  // Layers with no records of their own are filled from the labelled sample network, so the map is never bare.
+  const fallback = !demoMode;
+  const sampleLayers = {
+    machines: fallback && machinesProp.length === 0,
+    fires: fallback && fireEventsProp.length === 0,
+    yards: fallback && storageYardsProp.length === 0,
+    buyers: fallback && buyersProp.length === 0,
+  };
+  const machines = sampleLayers.machines ? INITIAL_MACHINES : machinesProp;
+  const fireEvents = sampleLayers.fires ? MOCK_FIRMS_FIRE_EVENTS : fireEventsProp;
+  const storageYards = sampleLayers.yards ? INITIAL_STORAGE_YARDS : storageYardsProp;
+  const buyers = sampleLayers.buyers ? INITIAL_BUYERS : buyersProp;
+  const anySample = Object.values(sampleLayers).some(Boolean);
+  // Sample machines have fixed positions: nothing is animated or presented as live GPS.
+  const machinesAreSample = demoMode || sampleLayers.machines;
+  const sampleNote = (on: boolean) => (demoMode || on ? '<div class="map-pop-chip is-sample">SAMPLE RECORD · fictional</div>' : '');
+
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
   const layerGroupRef = useRef<L.LayerGroup | null>(null);
 
-  const [tileMode, setTileMode] = useState<'satellite' | 'dark'>('satellite');
+  const [tileMode, setTileMode] = useState<'satellite' | 'street' | 'nasa'>('satellite');
   const [showFires, setShowFires] = useState(true);
   const [showMachines, setShowMachines] = useState(true);
   const [showFields, setShowFields] = useState(true);
   const [showYards, setShowYards] = useState(true);
-  const [lastRefresh, setLastRefresh] = useState<Date>(new Date());
+  const [showResidue, setShowResidue] = useState(true);
+  const [showBuyers, setShowBuyers] = useState(true);
+  const [showRoute, setShowRoute] = useState(true);
+  const [showWeather, setShowWeather] = useState(true);
+  const [layersOpen, setLayersOpen] = useState(false);
+  const [fieldListOpen, setFieldListOpen] = useState(() => defaultFieldListOpen && (typeof window === 'undefined' || window.innerWidth > 720));
+  const [fieldQuery, setFieldQuery] = useState('');
+  const [hiddenStages, setHiddenStages] = useState<Set<FieldStage>>(() => new Set());
+  const fittedRef = useRef(false);
+
+  // Popups must pan clear of the field finder panel while it is open (they inherit this default).
+  useEffect(() => {
+    const width = mapContainerRef.current?.clientWidth ?? 0;
+    const proto = L.Popup.prototype.options as L.PopupOptions;
+    proto.autoPanPaddingTopLeft = L.point(fieldListOpen && width > 640 ? 310 : 24, 72);
+    return () => { proto.autoPanPaddingTopLeft = L.point(24, 72); };
+  }, [fieldListOpen]);
+
+  const stageCounts = useMemo(() => {
+    const counts = Object.fromEntries(FIELD_STAGES.map((stage) => [stage, 0])) as Record<FieldStage, number>;
+    fields.forEach((field) => { counts[fieldStage(field.status)] += 1; });
+    return counts;
+  }, [fields]);
+
+  const visibleFields = useMemo(() => fields.filter((field) => !hiddenStages.has(fieldStage(field.status))), [fields, hiddenStages]);
+
+  const listedFields = useMemo(() => {
+    const q = fieldQuery.trim().toLowerCase();
+    if (!q) return visibleFields;
+    return visibleFields.filter((field) => [field.khasra_no, field.village, field.farmer_name, field.id]
+      .some((value) => String(value || '').toLowerCase().includes(q)));
+  }, [visibleFields, fieldQuery]);
+
+  const toggleStage = (stage: FieldStage) => {
+    setHiddenStages((current) => {
+      const next = new Set(current);
+      if (next.has(stage)) next.delete(stage); else next.add(stage);
+      return next;
+    });
+  };
+
+  // Keep fields clear of the floating controls (finder panel, legend, zoom).
+  const fitPadding = () => {
+    const width = mapContainerRef.current?.clientWidth ?? 0;
+    const panel = fieldListOpen && width > 640 ? 310 : 40;
+    return { paddingTopLeft: L.point(panel, 110), paddingBottomRight: L.point(70, 130) };
+  };
+
+  const fitToFields = (list: Field[] = visibleFields) => {
+    const map = mapInstanceRef.current;
+    if (!map) return;
+    const points = list.flatMap((field) => {
+      const ring = fieldRing(field);
+      return ring.length ? ring : [[Number(field.center?.lat), Number(field.center?.lng)] as [number, number]];
+    }).filter(([lat, lng]) => Number.isFinite(lat) && Number.isFinite(lng));
+    if (points.length === 0) {
+      map.flyTo([30.2458, 75.8421], 11);
+      return;
+    }
+    map.flyToBounds(L.latLngBounds(points), { ...fitPadding(), maxZoom: 15, duration: 0.9 });
+  };
+
+  const focusField = (field: Field) => {
+    onSelectField(field);
+    const map = mapInstanceRef.current;
+    const ring = fieldRing(field);
+    if (map && ring.length >= 3) map.flyToBounds(L.latLngBounds(ring), { padding: [90, 90], maxZoom: 16, duration: 0.9 });
+    else if (map && field.center) map.flyTo([field.center.lat, field.center.lng], 15, { duration: 0.9 });
+  };
+  const [weatherPoint, setWeatherPoint] = useState<{ temperature: number; precipitationProbability: number; precipitationMm: number; windGustKmh: number } | null>(null);
+  const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
+  const [mapError, setMapError] = useState<string | null>(null);
   const [animatedPositions, setAnimatedPositions] = useState<Record<string, { lat: number; lng: number }>>(
-    () => Object.fromEntries(machines.map(m => [m.id, m.current_location]))
+    () => demoMode ? Object.fromEntries(machines.map(m => [m.id, m.current_location])) : {}
   );
-  const animFrameRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [locationTimestamps, setLocationTimestamps] = useState<Record<string, string>>({});
+  const [locationLoadError, setLocationLoadError] = useState('');
+  const { t } = useAppLanguage();
 
   // Initialize Leaflet map
   useEffect(() => {
@@ -47,14 +180,25 @@ export const OpsMap: React.FC<OpsMapProps> = ({
     if (mapInstanceRef.current) return;
 
     // Centered at Sangrur, Punjab
-    const map = L.map(mapContainerRef.current, {
+    let map: L.Map;
+    try {
+      map = L.map(mapContainerRef.current, {
       center: [30.2458, 75.8421],
       zoom: 11,
-      zoomControl: true,
-      attributionControl: false,
+      zoomControl: false,
+      attributionControl: true,
     });
+    } catch (error) {
+      console.error('[NIRDHOOM] Leaflet initialization failed:', error);
+      setMapError(error instanceof Error ? error.message : 'Unable to initialize the operational map.');
+      return;
+    }
 
+    setMapError(null);
     mapInstanceRef.current = map;
+    const syncZoomClass = () => map.getContainer().classList.toggle('is-far', map.getZoom() < 12);
+    map.on('zoomend', syncZoomClass);
+    syncZoomClass();
     layerGroupRef.current = L.layerGroup().addTo(map);
 
     return () => {
@@ -63,34 +207,118 @@ export const OpsMap: React.FC<OpsMapProps> = ({
     };
   }, []);
 
-  // Live fleet tracking animation: machines drift toward assigned fields every 5s
+  // Leaflet measures its container at initialization. Lazy-loaded panels, mobile
+  // drawers and responsive layout changes can otherwise leave grey/blank map tiles.
   useEffect(() => {
-    const tick = () => {
-      setAnimatedPositions((prev) => {
-        const next = { ...prev };
-        machines.forEach((machine, idx) => {
-          const assignedField = fields[idx % fields.length];
-          if (!assignedField) return;
-          const target = assignedField.center;
-          const cur = prev[machine.id] || machine.current_location;
-          // Lerp 8% toward target to simulate GPS drift
-          next[machine.id] = {
-            lat: cur.lat + (target.lat - cur.lat) * 0.08,
-            lng: cur.lng + (target.lng - cur.lng) * 0.08,
-          };
-        });
-        return next;
-      });
-      setLastRefresh(new Date());
-    };
-
-    animFrameRef.current = setInterval(tick, 4500);
+    const container = mapContainerRef.current;
+    const map = mapInstanceRef.current;
+    if (!container || !map || typeof ResizeObserver === 'undefined') return;
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => map.invalidateSize({ pan: false, debounceMoveend: true }));
+    });
+    observer.observe(container);
+    frame = requestAnimationFrame(() => map.invalidateSize({ pan: false, debounceMoveend: true }));
     return () => {
-      if (animFrameRef.current) clearInterval(animFrameRef.current);
+      observer.disconnect();
+      cancelAnimationFrame(frame);
     };
-  }, [machines, fields]);
+  }, []);
 
-  // Update base tile layer
+  // In live mode, machine markers come only from persisted device GPS records.
+  // Never animate a vehicle toward a field: that would present fabricated positions as live telemetry.
+  useEffect(() => {
+    if (machinesAreSample || !supabase) {
+      setAnimatedPositions(Object.fromEntries(machines.map((machine) => [machine.id, machine.current_location])));
+      setLocationTimestamps({});
+      setLocationLoadError('');
+      setLastRefresh(new Date());
+      return;
+    }
+    const client = supabase;
+    let active = true;
+    const refreshLocations = async () => {
+      try {
+        const { data: sessionResult } = await client.auth.getSession();
+        const token = sessionResult.session?.access_token;
+        if (!token) {
+          if (active) {
+            setAnimatedPositions({});
+            setLocationTimestamps({});
+            setLocationLoadError('Sign in with an authorized account to view live machine GPS.');
+          }
+          return;
+        }
+        const { data, error } = await client
+          .from('machine_locations')
+          .select('machine_id,latitude,longitude,recorded_at')
+          .order('recorded_at', { ascending: false })
+          .limit(500);
+        if (error) throw error;
+        if (!active) return;
+        const now = Date.now();
+        const positions: Record<string, { lat: number; lng: number }> = {};
+        const timestamps: Record<string, string> = {};
+        for (const row of data || []) {
+          if (timestamps[row.machine_id]) continue;
+          const lat = Number(row.latitude);
+          const lng = Number(row.longitude);
+          const recordedAt = Date.parse(row.recorded_at);
+          if (!Number.isFinite(lat) || !Number.isFinite(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) continue;
+          if (!Number.isFinite(recordedAt) || now - recordedAt > 30 * 60 * 1000 || recordedAt > now + 60_000) continue;
+          positions[row.machine_id] = { lat, lng };
+          timestamps[row.machine_id] = row.recorded_at;
+        }
+        setAnimatedPositions(positions);
+        setLocationTimestamps(timestamps);
+        setLocationLoadError(Object.keys(positions).length ? '' : 'No recent device GPS records (last 30 minutes).');
+        setLastRefresh(new Date());
+      } catch (error) {
+        if (!active) return;
+        setLocationLoadError(error instanceof Error ? error.message : 'Live GPS could not be refreshed.');
+      }
+    };
+    void refreshLocations();
+    const interval = window.setInterval(() => void refreshLocations(), 15_000);
+    return () => { active = false; window.clearInterval(interval); };
+  }, [machinesAreSample, machines]);
+
+    // Weather is an operational planning layer, sourced through the authenticated weather adapter.
+  useEffect(() => {
+    if (demoMode || !showWeather || !selectedField?.dbId || !supabase) {
+      setWeatherPoint(null);
+      return;
+    }
+    const client = supabase;
+    let active = true;
+    const loadWeather = async () => {
+      try {
+        const { data } = await client.auth.getSession();
+        const token = data.session?.access_token;
+        if (!token) return;
+        const response = await fetch(`/api/weather?field_id=${encodeURIComponent(selectedField.dbId!)}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!response.ok) return;
+        const payload = await response.json();
+        const currentIndex = payload.forecast?.hourly?.time?.length ? 0 : -1;
+        if (!active || currentIndex < 0) return;
+        setWeatherPoint({
+          temperature: Number(payload.forecast.hourly.temperature_2m?.[currentIndex] ?? 0),
+          precipitationProbability: Number(payload.forecast.hourly.precipitation_probability?.[currentIndex] ?? 0),
+          precipitationMm: Number(payload.forecast.hourly.precipitation?.[currentIndex] ?? 0),
+          windGustKmh: Number(payload.forecast.hourly.wind_gusts_10m?.[currentIndex] ?? 0),
+        });
+      } catch {
+        if (active) setWeatherPoint(null);
+      }
+    };
+    void loadWeather();
+    return () => { active = false; };
+  }, [demoMode, selectedField?.dbId, showWeather]);
+
+// Update base tile layer
   useEffect(() => {
     const map = mapInstanceRef.current;
     if (!map) return;
@@ -102,17 +330,23 @@ export const OpsMap: React.FC<OpsMapProps> = ({
       }
     });
 
+    // NASA GIBS is a separate public imagery basemap; older imagery dates avoid
+    // blank tiles caused by same-day processing latency.
     if (tileMode === 'satellite') {
-      // Esri World Imagery (Satellite)
       L.tileLayer(
         'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-        { maxZoom: 18, maxNativeZoom: 17 }
+        { maxZoom: 18, maxNativeZoom: 17, attribution: 'Imagery © Esri, Maxar, Earthstar Geographics, and the GIS User Community' }
+      ).addTo(map);
+    } else if (tileMode === 'nasa') {
+      const imageryDate = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      L.tileLayer(
+        `https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/MODIS_Terra_CorrectedReflectance_TrueColor/default/${imageryDate}/GoogleMapsCompatible_Level9/{z}/{y}/{x}.jpg`,
+        { maxZoom: 18, maxNativeZoom: 9, attribution: 'NASA GIBS / NASA EOSDIS · MODIS Terra true-colour imagery (© NASA)' }
       ).addTo(map);
     } else {
-      // CartoDB Dark Matter
       L.tileLayer(
-        'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-        { maxZoom: 19, subdomains: 'abcd' }
+        'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+        { maxZoom: 19, attribution: '© OpenStreetMap contributors' }
       ).addTo(map);
     }
   }, [tileMode]);
@@ -127,79 +361,84 @@ export const OpsMap: React.FC<OpsMapProps> = ({
 
     // 1. Render Registered Customer Fields (Polygons)
     if (showFields) {
-      fields.forEach((field) => {
+      visibleFields.forEach((field) => {
         const isSelected = selectedField?.id === field.id;
-        const coords: [number, number][] = field.geometry.map((p) => [p.lat, p.lng]);
+        const coords = fieldRing(field);
+        if (coords.length < 3) return;
 
-        let fillColor = '#10b981'; // Green: Cleared / Verified
-        let strokeColor = '#34d399';
-
-        if (field.status === 'BALING_IN_PROGRESS') {
-          fillColor = '#f59e0b'; // Amber
-          strokeColor = '#fbbf24';
-        } else if (field.status === 'SCHEDULED') {
-          fillColor = '#06b6d4'; // Cyan
-          strokeColor = '#22d3ee';
-        } else if (field.status === 'REGISTERED') {
-          fillColor = '#8b5cf6'; // Purple
-          strokeColor = '#a78bfa';
-        }
+        const stage = STAGE_META[fieldStage(field.status)];
 
         const polygon = L.polygon(coords, {
-          color: isSelected ? '#ffffff' : strokeColor,
-          weight: isSelected ? 3 : 2,
-          fillColor: fillColor,
-          fillOpacity: isSelected ? 0.65 : 0.35,
-          dashArray: field.status === 'REGISTERED' ? '4, 4' : undefined,
+          color: isSelected ? '#ffffff' : stage.stroke,
+          weight: isSelected ? 4 : 2.5,
+          fillColor: stage.fill,
+          fillOpacity: isSelected ? 0.62 : 0.4,
+          dashArray: stage.dashed ? '5, 5' : undefined,
         });
 
         polygon.bindTooltip(
-          `<strong>${field.khasra_no}</strong><br/>${field.farmer_name}<br/>${field.acreage} ac (${field.paddy_variety})<br/><span style="color:#10b981;font-weight:bold;">0 Fires • Guaranteed Slot</span>`,
-          { direction: 'top', className: 'leaflet-custom-tooltip' }
+          `<div class="map-pop-title">${escapeHtml(field.khasra_no)}</div><div class="map-pop-sub">${escapeHtml(field.farmer_name)} · ${escapeHtml(field.village)}</div><div><span class="map-pop-stage" style="--stage:${escapeHtml(stage.fill)}">${escapeHtml(stage.label)}</span> ${escapeHtml(field.acreage)} ac (${escapeHtml(field.paddy_variety)})</div><div class="map-pop-note">Click to open field details</div>`,
+          { direction: 'top', className: 'leaflet-custom-tooltip', sticky: true }
         );
 
         polygon.on('click', () => {
           onSelectField(field);
         });
 
+        // A pin at the field centre keeps small fields findable when zoomed out.
+        const pinIcon = L.divIcon({
+          html: `<div class="map-field-pin${isSelected ? ' is-selected' : ''}" style="--stage:${stage.fill}"><span></span><b>${escapeHtml(field.khasra_no || '')}</b></div>`,
+          className: 'map-field-pin-wrap',
+          iconSize: [18, 18],
+          iconAnchor: [9, 9],
+        });
+        const center = field.center && Number.isFinite(Number(field.center.lat))
+          ? [Number(field.center.lat), Number(field.center.lng)] as [number, number]
+          : L.polygon(coords).getBounds().getCenter();
+        L.marker(center, { icon: pinIcon, zIndexOffset: isSelected ? 900 : 300, keyboard: false })
+          .on('click', () => focusField(field))
+          .addTo(layerGroup);
+
         polygon.addTo(layerGroup);
       });
     }
 
-    // 2. Render Subsidized Baler Fleet (Machines)
+    // 2. Machines: status-coloured tractor badges.
     if (showMachines) {
       machines.forEach((machine) => {
-        const iconHtml = `
-          <div style="position:relative;display:flex;align-items:center;justify-content:center;">
-            <div style="width:34px;height:34px;border-radius:50%;background:#022c22;border:2px solid #10b981;display:flex;align-items:center;justify-content:center;box-shadow:0 0 14px rgba(16,185,129,0.8);">
-              <span style="font-size:16px;">🚜</span>
-            </div>
-            <div style="position:absolute;bottom:-18px;white-space:nowrap;background:#0f172a;border:1px solid #10b981;border-radius:4px;padding:1px 5px;font-size:10px;font-weight:bold;color:#34d399;">
-              ${machine.name.split(' ')[0]} #${machine.id.slice(-2)}
-            </div>
-          </div>
-        `;
-
         const customIcon = L.divIcon({
-          html: iconHtml,
+          html: machineSymbol(machine),
           className: 'custom-baler-icon',
-          iconSize: [34, 34],
-          iconAnchor: [17, 17],
+          iconSize: [38, 38],
+          iconAnchor: [19, 19],
         });
 
-        const pos = animatedPositions[machine.id] || machine.current_location;
-        const marker = L.marker([pos.lat, pos.lng], {
+        const pos = machinesAreSample ? (animatedPositions[machine.id] || machine.current_location) : animatedPositions[machine.id];
+        if (!pos || !Number.isFinite(Number(pos.lat)) || !Number.isFinite(Number(pos.lng))) return;
+        const marker = L.marker([Number(pos.lat), Number(pos.lng)], {
           icon: customIcon,
+          zIndexOffset: machine.status === 'BALING' ? 600 : 400,
         });
+        const job = fields.find((f) => f.id === machine.assigned_field_ids?.[0]);
 
         marker.bindPopup(`
-          <div style="padding:4px;font-family:sans-serif;font-size:12px;">
-            <div style="font-weight:bold;color:#10b981;font-size:14px;">${machine.name}</div>
-            <div style="color:#94a3b8;margin-bottom:6px;">${machine.home_chc}</div>
-            <div><strong>Type:</strong> ${machine.type}</div>
-            <div><strong>Capacity:</strong> ${machine.capacity_acres_day} acres/day</div>
-            <div><strong>Operator:</strong> ${machine.operator_name} (${machine.operator_phone})</div>
-            <div><strong>Status:</strong> <span style="color:#34d399;font-weight:bold;">${machine.status}</span></div>
+          <div class="map-pop">
+            <div class="map-pop-title">${escapeHtml(machine.name)}</div>
+            <div class="map-pop-sub">${escapeHtml(machine.home_chc)}</div>
+            <div class="map-pop-rows">
+            <div><strong>Type:</strong> ${escapeHtml(machine.type)}</div>
+            <div><strong>Capacity:</strong> ${escapeHtml(machine.capacity_acres_day)} acres/day</div>
+            <div><strong>Fuel:</strong> ${escapeHtml(Math.round(machine.battery_or_fuel_pct || 0))}%</div>
+            <div><strong>Tractor:</strong> ${escapeHtml(machine.tractor_hp_required ? machine.tractor_hp_required + " HP" : "Not sourced")}</div>
+            <div><strong>Residue:</strong> ${escapeHtml((machine.residue_types || ["Not established"]).join(", "))}</div>
+            <div><strong>Operator:</strong> ${escapeHtml(machine.operator_name)}</div>
+            <div><strong>Contact:</strong> ${machinesAreSample ? "Demo placeholder — not a real contact" : escapeHtml(machine.operator_phone || "Not provided")}</div>
+            ${job ? `<div><strong>Job:</strong> ${escapeHtml(job.khasra_no)} · ${escapeHtml(job.village)} · ${escapeHtml(job.acreage)} ac</div>` : ''}
+            </div>
+            <div class="map-pop-note">Capability source: ${escapeHtml(machine.capability_source || "Not established")}${machine.capability_source_date ? " · " + escapeHtml(machine.capability_source_date) : ""}</div>
+            <div class="map-pop-status"><strong>Status:</strong> <span class="map-pop-chip is-status is-${String(machine.status).toLowerCase().replace('_', '-')}">${escapeHtml(machineStatusLabel(machine.status))}</span></div>
+            <div class="map-pop-note">${machinesAreSample ? 'Sample position — not live GPS' : 'Last device GPS: ' + (locationTimestamps[machine.id] ? new Date(locationTimestamps[machine.id]).toLocaleString('en-IN') : 'Unavailable')}</div>
+            ${sampleNote(sampleLayers.machines)}
           </div>
         `);
 
@@ -207,38 +446,37 @@ export const OpsMap: React.FC<OpsMapProps> = ({
       });
     }
 
-    // 3. Render NASA FIRMS Active Fire Anomalies (Red Pulsing Beacons)
+    // 3. Render fire observations. Sample events are synthetic and must never be attributed to NASA FIRMS.
     if (showFires && highlightFirmsFire) {
       fireEvents.forEach((fire) => {
-        const fireHtml = `
-          <div style="position:relative;display:flex;align-items:center;justify-content:center;">
-            <div style="width:28px;height:28px;border-radius:50%;background:rgba(239,68,68,0.25);position:absolute;animation:ping-slow 2s infinite;"></div>
-            <div style="width:20px;height:20px;border-radius:50%;background:#ef4444;border:2px solid #ffffff;display:flex;align-items:center;justify-content:center;box-shadow:0 0 16px #ef4444;">
-              <span style="font-size:10px;">🔥</span>
-            </div>
-          </div>
-        `;
-
+        if (!Number.isFinite(Number(fire.firms_point?.lat)) || !Number.isFinite(Number(fire.firms_point?.lng))) return;
+        const registered = Boolean(fire.matched_field_id);
         const fireIcon = L.divIcon({
-          html: fireHtml,
+          html: fireSymbol(fire.confidence >= 90, registered),
           className: 'custom-fire-icon',
           iconSize: [28, 28],
           iconAnchor: [14, 14],
         });
-
-        const marker = L.marker([fire.firms_point.lat, fire.firms_point.lng], {
+        const marker = L.marker([Number(fire.firms_point.lat), Number(fire.firms_point.lng)], {
           icon: fireIcon,
+          zIndexOffset: registered ? 800 : 200,
         });
+        const matched = registered ? fields.find((f) => f.id === fire.matched_field_id) : null;
+        const sampleFire = demoMode || sampleLayers.fires;
 
         marker.bindPopup(`
-          <div style="padding:6px;font-family:sans-serif;font-size:12px;color:#f87171;">
-            <div style="font-weight:bold;font-size:13px;color:#ef4444;">🔥 NASA FIRMS VIIRS Active Fire</div>
-            <div style="color:#cbd5e1;margin-top:2px;">Location: ${fire.nearest_village}</div>
-            <div style="color:#94a3b8;margin-top:2px;">Satellite: ${fire.satellite}</div>
-            <div style="color:#fbbf24;margin-top:2px;">Confidence: ${fire.confidence}% | Temp: ${fire.brightness_temp_kelvin} K</div>
-            <div style="margin-top:4px;padding:3px 6px;border-radius:4px;background:rgba(239,68,68,0.15);border:1px solid rgba(239,68,68,0.4);color:#fca5a5;font-weight:bold;font-size:11px;">
-              ⚠️ UNREGISTERED FIELD (NO NIRDHOOM CONTRACT)
+          <div class="map-pop">
+            <div class="map-pop-title is-ember">${sampleFire ? 'SIMULATED FIRE OBSERVATION — NOT NASA DATA' : 'NASA FIRMS VIIRS Active Fire'}</div>
+            <div class="map-pop-rows">
+            <div><strong>Near:</strong> ${escapeHtml(fire.nearest_village)}</div>
+            <div><strong>Detected:</strong> ${escapeHtml(fire.detected_at)}${timeAgo(fire.detected_at) ? ' · ' + timeAgo(fire.detected_at) : ''}</div>
+            <div><strong>Source:</strong> ${sampleFire ? 'Synthetic scenario record' : 'Provider observation'}</div>
+            <div><strong>Satellite:</strong> ${escapeHtml(fire.satellite)}</div>
+            <div><strong>Confidence:</strong> ${escapeHtml(fire.confidence)}% · <strong>Brightness:</strong> ${escapeHtml(fire.brightness_temp_kelvin)} K</div>
             </div>
+            <div class="map-pop-chip is-ember">${registered ? `Inside registered field ${escapeHtml(matched?.khasra_no || '')}: review required` : 'Outside registered fields (no NIRDHOOM contract)'}</div>
+            <div class="map-pop-note">A detection is supporting evidence, not proof of what burned.</div>
+            ${sampleFire ? '<div class="map-pop-chip is-sample">TRAINING SCENARIO ONLY — NOT A REAL FIRE ALERT</div>' : ''}
           </div>
         `);
 
@@ -246,31 +484,84 @@ export const OpsMap: React.FC<OpsMapProps> = ({
       });
     }
 
-    // 4. Render Storage Yards & Buyers
+        // 4. Render residue lots at their field origin.
+    if (showResidue) {
+      fields
+        .filter((field) => Boolean(field.residue_lot_id) || field.status === 'VERIFIED_NON_BURN')
+        .forEach((field) => {
+          const pos = field.center;
+          if (!Number.isFinite(Number(pos?.lat)) || !Number.isFinite(Number(pos?.lng))) return;
+          const icon = L.divIcon({
+            html: residueSymbol(),
+            className: 'residue-lot-icon',
+            iconSize: [26, 26],
+            iconAnchor: [13, 13],
+          });
+          L.marker([Number(pos.lat), Number(pos.lng)], { icon })
+            .bindPopup(`<div class="map-pop"><div class="map-pop-title">Residue lot</div><div class="map-pop-rows"><div>Field: ${escapeHtml(field.khasra_no)}</div><div>Status: ${escapeHtml(field.status.replaceAll('_',' '))}</div><div>Source: ${demoMode ? 'Illustrative demo field record' : 'Persisted field record'}</div></div></div>`)
+            .addTo(layerGroup);
+        });
+    }
+
+    // 5. Render buyer demand only where a coordinate is present; demo coordinates are illustrative pins, not verified facilities.
+    if (showBuyers) {
+      buyers.forEach((buyer) => {
+        const pos = buyer.location;
+        if (!pos || !Number.isFinite(Number(pos.lat)) || !Number.isFinite(Number(pos.lng))) return;
+        const icon = L.divIcon({
+          html: buyerSymbol(buyer.type),
+          className: 'buyer-icon',
+          iconSize: [27, 27],
+          iconAnchor: [13.5, 13.5],
+        });
+        L.marker([Number(pos.lat), Number(pos.lng)], { icon })
+          .bindPopup(`<div class="map-pop"><div class="map-pop-title is-wheat">${escapeHtml(buyer.name)}</div><div class="map-pop-sub">${escapeHtml(buyer.location_name)}</div><div class="map-pop-rows"><div><strong>Demand:</strong> ${buyer.demand_tonnes.toLocaleString('en-IN')} t</div><div><strong>Price:</strong> ₹${buyer.price_per_tonne.toLocaleString('en-IN')}/t</div></div><div class="map-pop-note">${demoMode || sampleLayers.buyers ? 'SIMULATED BUYER • indicative price and demand only; no real offer or contract' : 'Buyer location and commercial terms require independent confirmation.'}</div>${sampleNote(sampleLayers.buyers)}</div>`)
+          .addTo(layerGroup);
+      });
+    }
+
+    // 6. Render authenticated weather planning signal for the selected field.
+    if (showWeather && selectedField?.center && weatherPoint) {
+      const pos = selectedField.center;
+      const risk = weatherPoint.precipitationProbability >= 70 || weatherPoint.precipitationMm >= 8 || weatherPoint.windGustKmh >= 35;
+      const icon = L.divIcon({
+        html: `<div class="map-tile-icon is-round ${risk ? 'is-wheat' : 'is-green'}">☁️</div>`,
+        className: 'weather-icon',
+        iconSize: [30, 30],
+        iconAnchor: [15, 15],
+      });
+      L.marker([Number(pos.lat), Number(pos.lng)], { icon })
+        .bindPopup(`<div class="map-pop"><div class="map-pop-title">Weather planning signal</div><div class="map-pop-rows"><div>${weatherPoint.temperature.toFixed(0)}°C · rain probability ${weatherPoint.precipitationProbability.toFixed(0)}%</div><div>${weatherPoint.precipitationMm.toFixed(1)} mm rain · gusts ${weatherPoint.windGustKmh.toFixed(0)} km/h</div></div><div class="map-pop-note">Planning signal only; confirm field and machine conditions before dispatch.</div></div>`)
+        .addTo(layerGroup);
+    }
+
+    // Storage yards: fill level and alert state in the popup.
     if (showYards) {
       storageYards.forEach((yard) => {
-        const yardHtml = `
-          <div style="width:26px;height:26px;border-radius:6px;background:#1e293b;border:2px solid #3b82f6;display:flex;align-items:center;justify-content:center;box-shadow:0 0 10px rgba(59,130,246,0.6);">
-            <span style="font-size:12px;">🏭</span>
-          </div>
-        `;
-
         const yardIcon = L.divIcon({
-          html: yardHtml,
+          html: yardSymbol(yard.status || 'AVAILABLE'),
           className: 'yard-icon',
           iconSize: [26, 26],
           iconAnchor: [13, 13],
         });
 
-        const marker = L.marker([yard.location.lat, yard.location.lng], {
+        if (!Number.isFinite(Number(yard.location?.lat)) || !Number.isFinite(Number(yard.location?.lng))) return;
+        const marker = L.marker([Number(yard.location.lat), Number(yard.location.lng)], {
           icon: yardIcon,
         });
+        const fill = yard.capacity_tonnes > 0 ? Math.round((yard.current_load / yard.capacity_tonnes) * 100) : 0;
 
         marker.bindPopup(`
-          <div style="padding:4px;font-family:sans-serif;font-size:12px;">
-            <div style="font-weight:bold;color:#60a5fa;">${yard.name}</div>
-            <div>Capacity: ${yard.capacity_tonnes} tonnes</div>
-            <div>Current Stock: ${yard.current_load} tonnes</div>
+          <div class="map-pop">
+            <div class="map-pop-title is-sky">${escapeHtml(yard.name)}</div>
+            <div class="map-pop-rows">
+            <div><strong>Capacity:</strong> ${yard.capacity_tonnes.toLocaleString('en-IN')} tonnes</div>
+            <div><strong>Current stock:</strong> ${yard.current_load.toLocaleString('en-IN')} tonnes (${fill}% full)</div>
+            ${yard.incoming_tonnes ? `<div><strong>Incoming:</strong> ${yard.incoming_tonnes.toLocaleString('en-IN')} tonnes</div>` : ''}
+            <div class="map-pop-note">${demoMode || sampleLayers.yards ? 'SIMULATED CAPACITY / STOCK — NOT A LIVE INVENTORY FEED' : 'Inventory freshness must be confirmed with the yard operator.'}</div>
+            </div>
+            <div class="map-pop-status"><span class="map-pop-chip is-status is-${String(yard.status || 'AVAILABLE').toLowerCase()}">${escapeHtml(yard.status || 'AVAILABLE')}</span></div>
+            ${sampleNote(sampleLayers.yards)}
           </div>
         `);
 
@@ -278,14 +569,15 @@ export const OpsMap: React.FC<OpsMapProps> = ({
       });
     }
 
-    // 5. Render Active VRP Polyline Route
-    if (activeRoutePolyline && activeRoutePolyline.length > 1) {
+    // 7. Render Active VRP Polyline Route
+    if (showRoute && activeRoutePolyline && activeRoutePolyline.length > 1) {
       const lineCoords: [number, number][] = activeRoutePolyline.map((p) => [p.lat, p.lng]);
       const routeLine = L.polyline(lineCoords, {
-        color: '#10b981',
+        color: '#f0c66e',
         weight: 4,
-        opacity: 0.9,
-        dashArray: '8, 8',
+        opacity: 0.95,
+        dashArray: '10, 8',
+        lineCap: 'round',
       });
       routeLine.addTo(layerGroup);
     }
@@ -296,173 +588,222 @@ export const OpsMap: React.FC<OpsMapProps> = ({
     storageYards,
     buyers,
     selectedField,
+    visibleFields,
     activeRoutePolyline,
     highlightFirmsFire,
     showFields,
     showMachines,
     showFires,
     showYards,
+    showResidue,
+    showBuyers,
+    showRoute,
+    showWeather,
+    weatherPoint,
     animatedPositions,
+    locationTimestamps,
+    demoMode,
   ]);
 
-  // Pan to selected field
+  // Open framed on the fields instead of a fixed district-wide zoom.
   useEffect(() => {
-    if (selectedField && mapInstanceRef.current) {
-      mapInstanceRef.current.flyTo(
-        [selectedField.center.lat, selectedField.center.lng],
-        13,
-        { duration: 1.2 }
-      );
-    }
+    const map = mapInstanceRef.current;
+    if (!map || fittedRef.current || fields.length === 0) return;
+    fittedRef.current = true;
+    const centres = fields
+      .map((field) => ({ field, lat: Number(field.center?.lat), lng: Number(field.center?.lng) }))
+      .filter((entry) => Number.isFinite(entry.lat) && Number.isFinite(entry.lng));
+    // A statewide sample network would open at state zoom where nothing is readable, so open on the densest area.
+    const opening = densestGroup(centres).flatMap((entry) => fieldRing(entry.field));
+    if (opening.length) map.fitBounds(L.latLngBounds(opening), { ...fitPadding(), maxZoom: 14 });
+  }, [fields]);
+
+  // Zoom to a field when it is picked elsewhere (list, dispatch panel, field cards).
+  const lastSelectedRef = useRef<string | null>(selectedField?.id ?? null);
+  useEffect(() => {
+    if (!selectedField || selectedField.id === lastSelectedRef.current) return;
+    lastSelectedRef.current = selectedField.id;
+    const map = mapInstanceRef.current;
+    if (!map) return;
+    const ring = fieldRing(selectedField);
+    if (ring.length >= 3) map.flyToBounds(L.latLngBounds(ring), { padding: [90, 90], maxZoom: 16, duration: 0.9 });
+    else map.flyTo([selectedField.center.lat, selectedField.center.lng], 15, { duration: 0.9 });
   }, [selectedField]);
 
+  const layerToggles: { key: string; checked: boolean; set: (value: boolean) => void; label: React.ReactNode; swatch: React.ReactNode; tone?: string }[] = [
+    { key: 'fields', checked: showFields, set: setShowFields, swatch: <span className="map-swatch is-green" />, label: <span>Field polygons ({fields.length})</span> },
+    { key: 'machines', checked: showMachines, set: setShowMachines, swatch: <span className="map-swatch is-dot" />, label: <span>Balers & machines ({machines.length}){sampleLayers.machines && <em className="map-layer-tag">sample</em>}</span> },
+    { key: 'fires', checked: showFires, set: setShowFires, swatch: <Flame className="h-3.5 w-3.5 text-[var(--ember)]" />, label: <span className="font-semibold text-[var(--ember-ink)]">FIRMS observations ({fireEvents.length}){sampleLayers.fires && <em className="map-layer-tag">sample</em>}</span>, tone: 'is-ember' },
+    { key: 'yards', checked: showYards, set: setShowYards, swatch: <span className="map-swatch is-sky" />, label: <span>Yards & offtake ({storageYards.length}){sampleLayers.yards && <em className="map-layer-tag">sample</em>}</span> },
+    { key: 'residue', checked: showResidue, set: setShowResidue, swatch: <PackageCheck className="h-3.5 w-3.5 text-[var(--brand)]" />, label: <span>Residue lots ({fields.filter((field) => Boolean(field.residue_lot_id) || field.status === 'VERIFIED_NON_BURN').length})</span> },
+    { key: 'buyers', checked: showBuyers, set: setShowBuyers, swatch: <Building2 className="h-3.5 w-3.5 text-[var(--wheat-ink)]" />, label: <span>Buyer demand ({buyers.filter((buyer) => buyer.location).length} mapped){sampleLayers.buyers && <em className="map-layer-tag">sample</em>}</span> },
+    { key: 'weather', checked: showWeather, set: setShowWeather, swatch: <CloudSun className="h-3.5 w-3.5 text-[var(--sky)]" />, label: <span>Weather planning</span> },
+    { key: 'route', checked: showRoute, set: setShowRoute, swatch: <Route className="h-3.5 w-3.5 text-[var(--wheat-ink)]" />, label: <span>Pickup route</span> },
+  ];
+  const activeLayerCount = layerToggles.filter((layer) => layer.checked).length;
+  const clusters = SAMPLE_CLUSTERS;
+
   return (
-    <div className="relative w-full h-[540px] lg:h-[620px] rounded-xl overflow-hidden border border-slate-800 shadow-2xl">
-      {/* Map Container */}
-      <div ref={mapContainerRef} className="w-full h-full z-0" />
+    <div className="ops-map-surface map-shell relative w-full h-[540px] lg:h-[620px] overflow-hidden">
+      {/* Field GIS map — the operational tracking surface. */}
+      {mapError ? (
+        <div className="map-error">
+          <div className="max-w-md">
+            <div className="map-error-title">{t('Operational map unavailable')}</div>
+            <p>{t('Check your network/map tile access and reload.')}</p>
+            <p className="map-error-detail">{mapError}</p>
+          </div>
+        </div>
+      ) : (
+        <div ref={mapContainerRef} className="w-full h-full z-0" />
+      )}
 
       {/* GPS Live Ticker Top-Left */}
-      <div className="absolute top-3 left-3 z-10 bg-slate-900/90 backdrop-blur-md border border-emerald-500/30 rounded-lg px-3 py-1.5 flex items-center gap-2 text-xs shadow-lg">
-        <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
-        <span className="text-emerald-300 font-bold">GPS LIVE</span>
-        <span className="text-slate-400">·</span>
-        <span className="text-slate-300 font-mono">{machines.length} balers tracked</span>
-        <span className="text-slate-500 text-[10px] ml-1">Updated {lastRefresh.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</span>
+      <div className="map-gps">
+        <span className="map-gps-dot" />
+        <span className="map-gps-mode">{demoMode || anySample ? t('SAMPLE') : t('GPS LIVE')}</span>
+        <span className="map-gps-sep">·</span>
+        <span className="map-gps-count">{machinesAreSample ? machines.length : Object.keys(animatedPositions).length} {t('balers')} {machinesAreSample ? t('simulated') : t('with fresh GPS')}</span>
+        <span className="map-gps-time">{lastRefresh ? `${t('Updated')} ${lastRefresh.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}` : t('Waiting for device GPS')}</span>
       </div>
 
-      {/* Floating Control Overlay Top-Right */}
-      <div className="absolute top-3 right-3 z-10 flex flex-col gap-2">
-        {/* Tile mode switcher */}
-        <div className="bg-slate-900/90 backdrop-blur-md border border-slate-700/80 rounded-lg p-1.5 flex gap-1 shadow-lg">
-          <button
-            onClick={() => setTileMode('satellite')}
-            className={`px-2.5 py-1 text-xs font-semibold rounded transition-all cursor-pointer ${
-              tileMode === 'satellite'
-                ? 'bg-emerald-600 text-white shadow'
-                : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            🛰️ Satellite (Sentinel)
-          </button>
-          <button
-            onClick={() => setTileMode('dark')}
-            className={`px-2.5 py-1 text-xs font-semibold rounded transition-all cursor-pointer ${
-              tileMode === 'dark'
-                ? 'bg-emerald-600 text-white shadow'
-                : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            🌑 Dark Ops Mode
-          </button>
+      {!demoMode && locationLoadError && (
+        <div role="status" className="absolute left-3 top-14 z-[500] max-w-[min(92vw,420px)] rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-950 shadow-lg">
+          {t('Live GPS unavailable')}: {locationLoadError}
         </div>
+      )}
 
-        {/* Layer Toggles */}
-        <div className="bg-slate-900/90 backdrop-blur-md border border-slate-700/80 rounded-lg p-2 flex flex-col gap-1.5 shadow-lg text-xs font-medium">
-          <div className="text-[10px] uppercase font-bold text-slate-400 tracking-wider mb-0.5 flex items-center gap-1">
-            <Layers className="w-3 h-3 text-emerald-400" />
-            <span>GIS Map Layers</span>
+      {/* Field finder Top-Left */}
+      <div className="map-finder">
+        <button
+          type="button"
+          className={`map-finder-button ${fieldListOpen ? 'is-open' : ''}`}
+          onClick={() => setFieldListOpen((open) => !open)}
+          aria-expanded={fieldListOpen}
+        >
+          <ListFilter className="h-4 w-4" />
+          <span>{t('Find a field')}</span>
+          <span className="map-layers-count">{visibleFields.length}</span>
+        </button>
+        {fieldListOpen && (
+          <div className="map-finder-panel">
+            <div className="map-finder-search">
+              <Search className="h-4 w-4" aria-hidden="true" />
+              <input
+                value={fieldQuery}
+                onChange={(event) => setFieldQuery(event.target.value)}
+                placeholder={t('Khasra, village or farmer')}
+                aria-label={t('Search fields on the map')}
+                type="search"
+              />
+              {fieldQuery && <button type="button" aria-label="Clear search" onClick={() => setFieldQuery('')}><X className="h-3.5 w-3.5" /></button>}
+            </div>
+            <ul className="map-finder-list">
+              {listedFields.length === 0 ? (
+                <li className="map-finder-empty">{t('No fields match. Clear the search or turn a status back on below.')}</li>
+              ) : listedFields.map((field) => {
+                const meta = STAGE_META[fieldStage(field.status)];
+                const selected = selectedField?.id === field.id;
+                return (
+                  <li key={field.id}>
+                    <button type="button" className={`map-finder-row ${selected ? 'is-selected' : ''}`} onClick={() => focusField(field)}>
+                      <span className={`map-stage-swatch ${meta.dashed ? 'is-dashed' : ''}`} style={{ '--stage': meta.fill } as React.CSSProperties} />
+                      <span className="min-w-0 flex-1">
+                        <strong>{field.khasra_no || field.id}</strong>
+                        <small>{field.village} · {Number(field.acreage || 0).toFixed(1)} ac</small>
+                      </span>
+                      <span className="map-finder-stage">{meta.label}</span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
           </div>
+        )}
+      </div>
 
-          <label className="flex items-center justify-between gap-3 text-slate-300 hover:text-white cursor-pointer">
-            <span className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-sm bg-emerald-500"></span>
-              <span>Customer Polygons ({fields.length})</span>
-            </span>
-            <input
-              type="checkbox"
-              checked={showFields}
-              onChange={(e) => setShowFields(e.target.checked)}
-              className="accent-emerald-500 rounded"
-            />
-          </label>
+      {/* Layers control Top-Right */}
+      <div className="map-layers">
+        <button
+          type="button"
+          className={`map-layers-button ${layersOpen ? 'is-open' : ''}`}
+          onClick={() => setLayersOpen((open) => !open)}
+          aria-expanded={layersOpen}
+        >
+          <Layers className="h-4 w-4" />
+          <span>{t('Satellite field map')}</span>
+          <span className="map-layers-count">{activeLayerCount}</span>
+          <ChevronDown className="h-4 w-4 map-layers-chevron" />
+        </button>
+        {layersOpen && (
+          <div className="map-layers-panel">
+            <div className="map-layers-heading">
+              <Layers className="h-3.5 w-3.5" />
+              <span>{t('GIS map layers')}</span>
+            </div>
+            <div className="grid grid-cols-3 gap-1 p-2">
+              <button type="button" aria-pressed={tileMode === 'satellite'} onClick={() => setTileMode('satellite')} className={`rounded-lg px-2 py-2 text-xs font-bold ${tileMode === 'satellite' ? 'bg-emerald-800 text-white' : 'bg-white text-slate-700 border border-slate-200'}`}>{t('Satellite')}</button>
+              <button type="button" aria-pressed={tileMode === 'nasa'} onClick={() => setTileMode('nasa')} className={`rounded-lg px-2 py-2 text-xs font-bold ${tileMode === 'nasa' ? 'bg-emerald-800 text-white' : 'bg-white text-slate-700 border border-slate-200'}`}>{t('NASA imagery')}</button>
+              <button type="button" aria-pressed={tileMode === 'street'} onClick={() => setTileMode('street')} className={`rounded-lg px-2 py-2 text-xs font-bold ${tileMode === 'street' ? 'bg-emerald-800 text-white' : 'bg-white text-slate-700 border border-slate-200'}`}>{t('Street map')}</button>
+            </div>
+            {layerToggles.map((layer) => (
+              <label key={layer.key} className={`map-layer-row ${layer.tone || ''}`}>
+                <span className="flex min-w-0 items-center gap-2">
+                  <span className="map-layer-swatch">{layer.swatch}</span>
+                  {layer.label}
+                </span>
+                <input type="checkbox" className="map-switch" checked={layer.checked} onChange={(e) => layer.set(e.target.checked)} />
+              </label>
+            ))}
+          </div>
+        )}
+      </div>
 
-          <label className="flex items-center justify-between gap-3 text-slate-300 hover:text-white cursor-pointer">
-            <span className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-full bg-emerald-400"></span>
-              <span>Subsidised Balers ({machines.length})</span>
-            </span>
-            <input
-              type="checkbox"
-              checked={showMachines}
-              onChange={(e) => setShowMachines(e.target.checked)}
-              className="accent-emerald-500 rounded"
-            />
-          </label>
+      {/* Zoom + recenter Right */}
+      <div className="map-zoom">
+        <button type="button" aria-label="Zoom in" onClick={() => mapInstanceRef.current?.zoomIn()}><Plus className="h-4 w-4" /></button>
+        <button type="button" aria-label="Zoom out" onClick={() => mapInstanceRef.current?.zoomOut()}><Minus className="h-4 w-4" /></button>
+        <button type="button" aria-label="Show all fields" title="Show all fields" onClick={() => fitToFields()}><LocateFixed className="h-4 w-4" /></button>
+      </div>
 
-          <label className="flex items-center justify-between gap-3 text-slate-300 hover:text-white cursor-pointer">
-            <span className="flex items-center gap-1.5">
-              <Flame className="w-3.5 h-3.5 text-red-500 animate-pulse" />
-              <span className="text-red-300 font-semibold">NASA FIRMS Fires ({fireEvents.length})</span>
-            </span>
-            <input
-              type="checkbox"
-              checked={showFires}
-              onChange={(e) => setShowFires(e.target.checked)}
-              className="accent-red-500 rounded"
-            />
-          </label>
-
-          <label className="flex items-center justify-between gap-3 text-slate-300 hover:text-white cursor-pointer">
-            <span className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-sm bg-blue-500"></span>
-              <span>Yards & Offtake ({storageYards.length})</span>
-            </span>
-            <input
-              type="checkbox"
-              checked={showYards}
-              onChange={(e) => setShowYards(e.target.checked)}
-              className="accent-blue-500 rounded"
-            />
-          </label>
+      {/* Bottom: legend above the hotspot cluster shortcuts */}
+      <div className="map-bottom">
+        <div className="map-legend" role="group" aria-label="Field status filter">
+          {FIELD_STAGES.map((stage) => {
+            const meta = STAGE_META[stage];
+            const on = !hiddenStages.has(stage);
+            return (
+              <button
+                key={stage}
+                type="button"
+                className={`map-stage ${on ? '' : 'is-off'}`}
+                aria-pressed={on}
+                title={on ? `Hide ${meta.label.toLowerCase()} fields` : `Show ${meta.label.toLowerCase()} fields`}
+                onClick={() => toggleStage(stage)}
+              >
+                <span className={`map-stage-swatch ${meta.dashed ? 'is-dashed' : ''}`} style={{ '--stage': meta.fill } as React.CSSProperties} />
+                <span>{meta.label}</span>
+                <b>{stageCounts[stage]}</b>
+              </button>
+            );
+          })}
+          <span className="map-stage is-static">
+            <span className="map-swatch is-fire"></span>
+            <span className="font-semibold text-[var(--ember-ink)]">External thermal observation</span>
+          </span>
         </div>
-      </div>
 
-      {/* Floating Bottom Quick Zoom Bar */}
-      <div className="absolute bottom-3 left-3 z-10 bg-slate-900/90 backdrop-blur-md border border-slate-700/80 rounded-lg p-1.5 flex items-center gap-2 shadow-lg text-xs">
-        <span className="text-slate-400 font-medium px-1 flex items-center gap-1">
-          <MapPin className="w-3.5 h-3.5 text-emerald-400" />
-          <span>Hotspot Clusters:</span>
-        </span>
-        <button
-          onClick={() => mapInstanceRef.current?.flyTo([30.2458, 75.8421], 12)}
-          className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs cursor-pointer"
-        >
-          Sangrur
-        </button>
-        <button
-          onClick={() => mapInstanceRef.current?.flyTo([30.1311, 75.8016], 13)}
-          className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs cursor-pointer"
-        >
-          Sunam
-        </button>
-        <button
-          onClick={() => mapInstanceRef.current?.flyTo([30.3683, 75.8672], 13)}
-          className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs cursor-pointer"
-        >
-          Dhuri
-        </button>
-        <button
-          onClick={() => mapInstanceRef.current?.flyTo([30.2766, 76.0427], 13)}
-          className="px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs cursor-pointer"
-        >
-          Bhawanigarh
-        </button>
-      </div>
-
-      {/* Floating Map Legend Bottom-Right */}
-      <div className="absolute bottom-3 right-3 z-10 hidden sm:flex items-center gap-3 bg-slate-950/85 backdrop-blur-md px-3 py-1.5 rounded-lg border border-slate-800 text-[11px] text-slate-300">
-        <span className="flex items-center gap-1">
-          <span className="w-3 h-2 rounded bg-emerald-500 border border-emerald-300 inline-block"></span>
-          <span>Nirdhoom 0-Burn Field</span>
-        </span>
-        <span className="flex items-center gap-1">
-          <span className="w-3 h-2 rounded bg-amber-500 border border-amber-300 inline-block"></span>
-          <span>Baler Active</span>
-        </span>
-        <span className="flex items-center gap-1">
-          <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-ping inline-block"></span>
-          <span className="text-red-400 font-semibold">External Fire Storm</span>
-        </span>
+        <div className="map-clusters">
+          <span className="map-clusters-label">
+            <MapPin className="w-3.5 h-3.5" />
+            <span>Hotspot Clusters:</span>
+          </span>
+          {clusters.map(([name, center, zoom]) => (
+            <button key={name} type="button" onClick={() => mapInstanceRef.current?.flyTo(center, zoom)}>
+              {name}
+            </button>
+          ))}
+        </div>
       </div>
     </div>
   );

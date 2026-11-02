@@ -1,12 +1,14 @@
 import React, { useState } from 'react';
+import { useAppLanguage } from '../../i18n/LanguageContext';
+import { supabase } from '../../lib/supabase';
 import { Field, BurnEvent } from '../../types';
 import { executeFirmsAudit, generateNonBurnCertificate } from '../../utils/spatialVerification';
 import { CarbonCertificate } from './CarbonCertificate';
+import { EvidenceReview } from './EvidenceReview';
 import { 
   Satellite, 
   ShieldCheck, 
   Flame, 
-  CheckCircle2, 
   Award, 
   FileText, 
   Sparkles, 
@@ -17,17 +19,110 @@ import {
 
 interface SatelliteAuditProps {
   fields: Field[];
+  demoMode: boolean;
   fireEvents: BurnEvent[];
+  onVerified?: (fieldId: string) => void;
 }
 
 export const SatelliteAudit: React.FC<SatelliteAuditProps> = ({
   fields,
+  demoMode,
   fireEvents,
+  onVerified,
 }) => {
-  const auditReport = executeFirmsAudit(fields, fireEvents);
+  const { t } = useAppLanguage();
+  const auditReport = executeFirmsAudit(fields, fireEvents, { illustrative: demoMode });
   const [selectedFieldForCert, setSelectedFieldForCert] = useState<Field | null>(null);
+  const [reviewingFieldId, setReviewingFieldId] = useState<string | null>(null);
+  const [reviewMessage, setReviewMessage] = useState('');
+  const [reviewFocus, setReviewFocus] = useState<{ id: string; nonce: number } | null>(null);
+  const [firmsBusyFieldId, setFirmsBusyFieldId] = useState<string | null>(null);
+  const [firmsScreenings, setFirmsScreenings] = useState<Record<string, { count: number; matchedCount: number; queriedAt: string; error?: string }>>({});
 
-  const handleOpenCertificate = (fieldId: string) => {
+  const screenFieldWithFirms = async (field: Field) => {
+    if (demoMode || firmsBusyFieldId) return;
+    setFirmsBusyFieldId(field.id);
+    setFirmsScreenings((current) => {
+      const next = { ...current };
+      delete next[field.id];
+      return next;
+    });
+    try {
+      if (!supabase) throw new Error('Live Supabase is not configured.');
+      if (!field.dbId || !Number.isFinite(field.center?.lat) || !Number.isFinite(field.center?.lng) ||
+          field.center.lat < -90 || field.center.lat > 90 || field.center.lng < -180 || field.center.lng > 180 ||
+          !Array.isArray(field.geometry) || field.geometry.length < 3) {
+        throw new Error('A saved field UUID, valid centre and field boundary are required for spatial screening.');
+      }
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      if (sessionError || !token) throw new Error('Sign in again before requesting NASA FIRMS observations.');
+      const response = await fetch('/api/firms', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          field_id: field.dbId,
+          radius_km: 12,
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(String(payload.error || 'FIRMS screening request failed.'));
+      setFirmsScreenings((current) => ({
+        ...current,
+        [field.id]: {
+          count: Number(payload.count || 0),
+          matchedCount: Number(payload.matched_count || 0),
+          queriedAt: String(payload.queried_at || new Date().toISOString()),
+        },
+      }));
+    } catch (error) {
+      setFirmsScreenings((current) => ({
+        ...current,
+        [field.id]: {
+          count: 0,
+          matchedCount: 0,
+          queriedAt: new Date().toISOString(),
+          error: error instanceof Error ? error.message : 'FIRMS screening failed.',
+        },
+      }));
+    } finally {
+      setFirmsBusyFieldId(null);
+    }
+  };
+
+  const handleVerify = async (field: Field) => {
+    setReviewingFieldId(field.id);
+    setReviewMessage('');
+    try {
+      if (demoMode) {
+        setReviewMessage(`Simulated review note recorded for ${field.khasra_no}. Field status is unchanged; no certificate or payment claim was issued.`);
+        return;
+      }
+      if (!supabase) throw new Error('Live Supabase is not configured.');
+      // The UI has no validated confidence model and cannot independently prove
+      // non-burning. Persist a review-required event; only a separate authorized
+      // evidence workflow may mark the field VERIFIED_NON_BURN.
+      const { error } = await supabase.rpc('record_verification_review', {
+        p_field_id: field.dbId || field.id,
+        p_result: 'REVIEW_REQUIRED',
+        p_confidence: 0,
+        p_metadata: {
+          source: 'nirdhoom-review-console',
+          observation_mode: auditReport.dataAvailability,
+          decision_basis: 'manual_review_required_no_validated_confidence_model',
+          client_reported_confidence: null,
+        },
+      });
+      if (error) throw new Error(error.message);
+      setReviewMessage(`Review-required event recorded for ${field.khasra_no}. Field status is unchanged pending an authorized evidence-based decision.`);
+    } catch (error) {
+      setReviewMessage(error instanceof Error ? error.message : 'Verification review failed.');
+    } finally {
+      setReviewingFieldId(null);
+    }
+  };
+
+  const handleOpenRecord = (fieldId: string) => {
     const f = fields.find((item) => item.id === fieldId);
     if (f) {
       setSelectedFieldForCert(f);
@@ -35,186 +130,244 @@ export const SatelliteAudit: React.FC<SatelliteAuditProps> = ({
   };
 
   return (
-    <div className="flex flex-col gap-6 max-w-6xl mx-auto p-2">
+    <div className="tone-adapt farmer-surface farmer-verification ui-stack">
       {/* Top Banner: The Money Shot Pitch Framing */}
-      <div className="glass-panel-emerald p-5">
-        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="w-12 h-12 rounded-2xl bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 flex items-center justify-center shrink-0 shadow-lg shadow-emerald-500/30">
-              <Satellite className="w-6 h-6 animate-pulse" />
+      <div className="ui-card is-flush">
+        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-5 p-5 sm:p-6">
+          <div className="flex items-start gap-4">
+            <div className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-[var(--sky-soft)] text-[var(--sky)]">
+              <Satellite className="w-6 h-6" />
             </div>
             <div>
-              <div className="flex items-center gap-2">
-                <h3 className="font-extrabold text-lg text-white font-['Outfit']">
-                  Beat 4: The Money Shot — NASA FIRMS Verification Layer
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="font-[family-name:var(--font-display)] text-[24px] font-bold leading-tight text-[var(--ink)]">
+                  {t('Check field proof')}
                 </h3>
-                <span className="badge badge-emerald text-xs">
-                  Zero In-Polygon Fires
+                <span className="ui-chip is-green">
+                  {demoMode ? 'Synthetic observation demo' : auditReport.dataAvailability === 'NO_OBSERVATIONS' ? 'Awaiting observations' : 'Observation review'}
                 </span>
               </div>
-              <p className="text-xs text-slate-300 mt-1 max-w-2xl leading-relaxed">
-                We combine registered field polygons with NASA FIRMS VIIRS active fire data to mathematically prove that our contracted acres did NOT burn, while surrounding unregistered farms lit up. This transforms parali logistics into high-margin institutional carbon credits.
+              <p className="ui-card-sub max-w-2xl !text-[14px]">
+                We intersect registered field polygons with available remote-sensing observations and operational evidence. A missing detection is not absolute proof of no burning, and impact or registry claims remain gated by methodology and verification.
               </p>
             </div>
           </div>
 
-          <div className="bg-slate-900/90 border border-emerald-500/40 px-4 py-3 rounded-xl flex items-center gap-3 shrink-0">
+          <div className="flex shrink-0 items-center gap-4 rounded-2xl border border-[var(--brand-line)] bg-[var(--brand-soft)] px-5 py-4">
             <div>
-              <span className="text-[10px] text-slate-400 uppercase font-bold block">Compliance Score</span>
-              <div className="text-2xl font-black text-emerald-400 font-mono">
-                {auditReport.complianceRate}%
+              <span className="ui-kv-label block">{t('Fields in this review')}</span>
+              <div className="font-[family-name:var(--font-display)] text-[34px] font-bold leading-none text-[var(--brand-ink)]">
+                {auditReport.totalFieldsAudited}
               </div>
             </div>
-            <ShieldCheck className="w-7 h-7 text-emerald-400" />
+            <Satellite className="w-8 h-8 text-[var(--brand)]" />
           </div>
         </div>
 
-        {/* Real NASA FIRMS Geospatial Thermal Sensor Visual */}
-        <div className="mt-4 rounded-xl overflow-hidden border border-emerald-500/30 relative max-h-56 bg-slate-950">
+        {/* Remote-sensing evidence context */}
+        <div className="tone-native relative max-h-64 overflow-hidden bg-slate-950">
           <img 
             src="/images/satellite_firms.jpg" 
-            alt="NASA FIRMS VIIRS 375m Satellite Thermal Layer - Zero Customer Fires"
-            className="w-full h-52 object-cover object-center"
-          />
+            alt="Remote-sensing evidence illustration"
+            className="w-full h-64 object-cover object-center"
+           loading="lazy" decoding="async" />
           <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/40 to-transparent" />
-          <div className="absolute bottom-3 left-4 right-4 flex items-center justify-between">
+          <div className="absolute bottom-4 left-5 right-5 flex items-end justify-between gap-4">
             <div>
-              <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
-                NASA FIRMS S-NPP / NOAA-20 VIIRS 375m NRT SENSOR
+              <span className="rounded-md border border-white/20 bg-white/10 px-2 py-1 font-mono text-[11px] font-semibold text-amber-200 backdrop-blur">
+                {t('FIRMS / VIIRS thermal observations')}
               </span>
-              <p className="text-xs font-bold text-white mt-1">
-                PostGIS ST_Contains Polygon Match: 0/5 Customer Fields Contained Active Fire Points
+              <p className="mt-2 text-[15px] font-semibold text-white">
+                {auditReport.dataAvailability === 'NO_OBSERVATIONS' ? 'No remote-sensing observations are currently available for field screening' : `${auditReport.cleanFieldsCount} field(s) have no fire point matched in supplied observations; this is not proof of no burning`}
               </p>
             </div>
             <div className="text-right hidden sm:block">
-              <span className="text-xs font-mono text-emerald-400 font-bold block">100% Non-Burn Proof</span>
-              <span className="text-[10px] text-slate-400">Verra VM0042 Compliant</span>
+              <span className="block font-mono text-xs font-bold text-amber-200">{demoMode ? 'Synthetic demo only' : auditReport.dataAvailability === 'NO_OBSERVATIONS' ? 'No observations available' : 'Supporting evidence only'}</span>
+              <span className="text-[11px] text-white/70">{t('No registry issuance or retirement')}</span>
             </div>
           </div>
         </div>
       </div>
 
+      <section className="evidence-language" aria-label="Evidence language">
+        <div><b>Observed</b><span>{t('What the system actually saw')}</span></div>
+        <div><b>Verified</b><span>{t('What an authorized review confirmed')}</span></div>
+        <div><b>Calculated</b><span>Derived from recorded inputs</span></div>
+        <div><b>Estimated</b><span>Planning value, not a measured outcome</span></div>
+      </section>
+
       {/* 4 Quantitative Proof Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <div className="glass-panel p-4 border-emerald-500/30">
-          <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
-            <span>Customer Fires</span>
-            <ShieldCheck className="w-4 h-4 text-emerald-400" />
+      <div className="ui-stats">
+        <div className="ui-stat is-green">
+          <div className="ui-stat-label flex items-center justify-between">
+            <span>Fire points in this field</span>
+            <ShieldCheck className="w-4 h-4 text-[var(--brand)]" />
           </div>
-          <div className="text-2xl font-extrabold text-emerald-400 font-mono">
+          <div className="ui-stat-value">
             {auditReport.firesInRegisteredFields}{' '}
-            <span className="text-xs text-emerald-300 font-normal">Fires (0%)</span>
+            <span className="font-[family-name:var(--font-body)] text-[13px] font-semibold text-[var(--muted)]">fire points</span>
           </div>
-          <p className="text-[11px] text-emerald-400/90 mt-1 font-semibold">
-            All {auditReport.totalFieldsAudited} polygons pristine
+          <p className="ui-stat-note">
+            No-fire observations do not equal absolute non-burn proof
           </p>
         </div>
 
-        <div className="glass-panel p-4 border-red-500/30">
-          <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
-            <span>Neighbor Fire Storm</span>
-            <Flame className="w-4 h-4 text-red-500 animate-pulse" />
+        <div className="ui-stat is-ember">
+          <div className="ui-stat-label flex items-center justify-between">
+            <span>Nearby fire points</span>
+            <Flame className="w-4 h-4 text-[var(--ember)]" />
           </div>
-          <div className="text-2xl font-extrabold text-red-400 font-mono">
+          <div className="ui-stat-value">
             {auditReport.firesInSurroundingBuffer}{' '}
-            <span className="text-xs text-slate-400 font-normal">Thermal Points</span>
+            <span className="font-[family-name:var(--font-body)] text-[13px] font-semibold text-[var(--muted)]">fire points</span>
           </div>
-          <p className="text-[11px] text-red-400/90 mt-1 font-semibold">
-            Peak temp: 461 Kelvin (Unregistered)
+          <p className="ui-stat-note">
+            {demoMode ? 'Synthetic demo observations' : 'Only provider-returned observations are shown'}
           </p>
         </div>
 
-        <div className="glass-panel p-4 border-cyan-500/30">
-          <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
-            <span>Emissions Avoided</span>
-            <Sparkles className="w-4 h-4 text-cyan-400" />
+        <div className="ui-stat is-sky">
+          <div className="ui-stat-label flex items-center justify-between">
+            <span>Illustrative emissions estimate</span>
+            <Sparkles className="w-4 h-4 text-[var(--sky)]" />
           </div>
-          <div className="text-2xl font-extrabold text-cyan-300 font-mono">
+          <div className="ui-stat-value">
             {auditReport.co2eAvoided}{' '}
-            <span className="text-xs text-slate-400 font-normal">t CO₂e</span>
+            <span className="font-[family-name:var(--font-body)] text-[13px] font-semibold text-[var(--muted)]">t CO₂e</span>
           </div>
-          <p className="text-[11px] text-cyan-400/90 mt-1 font-semibold">
-            + {auditReport.pm25Prevented} kg PM2.5 prevented
+          <p className="ui-stat-note">
+            + {auditReport.pm25Prevented === 0 ? 'Not calculated' : `${auditReport.pm25Prevented} kg PM2.5 · ${auditReport.strawClearedTonnes} t straw cleared (sample factors)`}
           </p>
         </div>
 
-        <div className="glass-panel p-4 border-amber-500/30">
-          <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
-            <span>Carbon Credit Claim</span>
-            <Award className="w-4 h-4 text-amber-400" />
+        <div className="ui-stat is-wheat">
+          <div className="ui-stat-label flex items-center justify-between">
+            <span>Carbon market</span>
+            <Award className="w-4 h-4 text-[var(--wheat)]" />
           </div>
-          <div className="text-2xl font-extrabold text-amber-300 font-mono">
-            ₹{auditReport.carbonCreditValueInr.toLocaleString()}
+          <div className="ui-stat-value">
+            {auditReport.carbonCreditValueInr === 0 ? '—' : `₹${auditReport.carbonCreditValueInr.toLocaleString()}`}
           </div>
-          <p className="text-[11px] text-amber-400/90 mt-1 font-semibold">
-            Verra VM0042 Registry Ready
+          <p className="ui-stat-note">
+            Not available in this version
           </p>
         </div>
       </div>
 
+      <EvidenceReview
+        fields={fields}
+        fireEvents={fireEvents}
+        demoMode={demoMode}
+        focusFieldId={reviewFocus?.id ?? null}
+        focusNonce={reviewFocus?.nonce}
+        reviewingFieldId={reviewingFieldId}
+        onApprove={handleVerify}
+      />
+
       {/* Spatial Audit Table */}
-      <div className="glass-panel p-4 flex flex-col gap-3">
-        <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-          <div className="flex items-center gap-2">
-            <FileText className="w-4 h-4 text-emerald-400" />
-            <h4 className="font-bold text-sm text-white">
-              Field-Level Spatial Verification Ledger (ST_Contains Audit)
+      <div className="ui-card">
+        <div className="ui-card-head">
+          <div className="ui-card-title">
+            <FileText />
+            <h4>
+              Field proof records
             </h4>
           </div>
-          <span className="text-xs text-slate-400">
-            Nightly NASA VIIRS NOAA-20 & Suomi-NPP Sync
+          <span className="ui-chip">
+            {demoMode ? 'Synthetic observation stream' : 'Provider observations only when configured'}
           </span>
         </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-xs text-left">
-            <thead className="bg-slate-900/80 text-slate-400 uppercase text-[10px] tracking-wider">
+        <div className="ui-table-wrap">
+          <table className="ui-table">
+            <thead>
               <tr>
                 <th className="py-2.5 px-3">Khasra #</th>
                 <th className="py-2.5 px-3">Farmer & Village</th>
                 <th className="py-2.5 px-3">Acreage</th>
                 <th className="py-2.5 px-3">FIRMS Fires In Polygon</th>
-                <th className="py-2.5 px-3">Sentinel-2 NDVI Drop</th>
-                <th className="py-2.5 px-3">Audit Outcome</th>
-                <th className="py-2.5 px-3 text-right">Certificate</th>
+                <th className="py-2.5 px-3">Field & satellite proof</th>
+                <th className="py-2.5 px-3">What we found</th>
+                <th className="py-2.5 px-3 text-right">Record</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-800/80">
+            <tbody>
               {fields.map((field) => {
                 return (
-                  <tr key={field.id} className="hover:bg-slate-900/60 transition-colors">
-                    <td className="py-3 px-3 font-bold text-white font-mono">
+                  <tr key={field.id}>
+                    <td className="font-[family-name:var(--font-display)] text-[16px] font-bold !text-[var(--ink)] whitespace-nowrap">
                       {field.khasra_no}
                     </td>
                     <td className="py-3 px-3">
-                      <div className="font-semibold text-slate-200">{field.farmer_name}</div>
-                      <div className="text-[11px] text-slate-400">{field.village}, {field.block}</div>
+                      <div className="font-semibold text-[var(--ink)]">{field.farmer_name}</div>
+                      <div className="text-[12px] text-[var(--muted)]">{field.village}, {field.block}</div>
                     </td>
-                    <td className="py-3 px-3 font-mono text-slate-200">
+                    <td className="tabular-nums whitespace-nowrap">
                       {field.acreage} ac
                     </td>
                     <td className="py-3 px-3">
-                      <div className="flex items-center gap-1.5 text-emerald-400 font-bold">
-                        <CheckCircle2 className="w-3.5 h-3.5" />
-                        <span>0 Fires</span>
+                      <div className="flex items-center gap-1.5 font-semibold text-[var(--brand-ink)] whitespace-nowrap">
+                        <AlertCircle className="w-3.5 h-3.5" />
+                        <span>{auditReport.dataAvailability === 'NO_OBSERVATIONS' ? 'Not assessed' : `${auditReport.auditResults.find((result) => result.fieldId === field.id)?.firesInsideCount ?? 0} fire point(s)`}</span>
                       </div>
+                      {auditReport.dataAvailability !== 'NO_OBSERVATIONS' && (() => {
+                        const row = auditReport.auditResults.find((result) => result.fieldId === field.id);
+                        return <span className="block text-[12px] text-[var(--muted)]">{row?.firesWithin1km ?? 0} within 1 km · {row?.firesWithin5km ?? 0} within 5 km</span>;
+                      })()}
                     </td>
                     <td className="py-3 px-3">
-                      <span className="font-mono text-cyan-300">0.74 → 0.16</span>
-                      <span className="text-[10px] text-slate-500 block">Mechanical clean</span>
+                      <span className="font-semibold text-[var(--sky-ink)]">{demoMode ? 'Illustrative' : 'Not available'}</span>
+                      <span className="block text-[12px] text-[var(--muted)]">{demoMode ? 'Synthetic demo value' : 'Awaiting evidence'}</span>
                     </td>
                     <td className="py-3 px-3">
-                      <span className="badge badge-emerald text-[10px]">
-                        VERIFIED 100% NON-BURN
+                      <span className="ui-chip is-wheat">
+                        {demoMode ? 'DEMO / ILLUSTRATIVE' : field.status === 'VERIFIED_NON_BURN' ? 'INTERNAL STATUS — REVIEW SOURCE' : 'NOT VERIFIED'}
                       </span>
                     </td>
                     <td className="py-3 px-3 text-right">
-                      <button
-                        onClick={() => handleOpenCertificate(field.id)}
-                        className="px-2.5 py-1 rounded bg-slate-800 hover:bg-emerald-600 hover:text-white text-emerald-300 text-xs font-semibold border border-slate-700 transition-all cursor-pointer"
-                      >
-                        View Certificate
-                      </button>
+                      <div className="flex items-center justify-end gap-2">
+                        {(field.status === 'CLEARED_PENDING_AUDIT' || demoMode) && field.status !== 'VERIFIED_NON_BURN' && (
+                          <button
+                            onClick={() => setReviewFocus({ id: field.id, nonce: Date.now() })}
+                            disabled={reviewingFieldId === field.id}
+                            className="ui-btn is-primary is-sm"
+                          >
+                            {reviewingFieldId === field.id ? 'Reviewing…' : 'Review field record'}
+                          </button>
+                        )}
+                        {!demoMode && (
+                          <button
+                            onClick={() => void screenFieldWithFirms(field)}
+                            disabled={firmsBusyFieldId !== null}
+                            className="ui-btn is-sm"
+                          >
+                            {firmsBusyFieldId === field.id ? 'Querying FIRMS…' : 'Query NASA FIRMS'}
+                          </button>
+                        )}
+                        {demoMode ? (
+                          <button
+                            onClick={() => handleOpenRecord(field.id)}
+                            className="ui-btn is-sm"
+                          >
+                            View illustrative record
+                          </button>
+                        ) : (
+                          <span className="text-xs text-[var(--muted)]" title="A production certificate is unavailable until an authorized verifier signs a validated evidence record.">
+                            Certificate unavailable
+                          </span>
+                        )}
+                        {firmsScreenings[field.id] && (
+                          <div className="mt-2 max-w-xs text-left text-xs" role="status">
+                            {firmsScreenings[field.id].error ? (
+                              <span className="text-red-700">{firmsScreenings[field.id].error}</span>
+                            ) : (
+                              <span className="text-[var(--muted)]">
+                                NASA FIRMS queried {new Date(firmsScreenings[field.id].queriedAt).toLocaleString()} · {firmsScreenings[field.id].count} nearby observations · {firmsScreenings[field.id].matchedCount} matched to this boundary. Screening only—not verification; results are not persisted.
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 );
@@ -224,48 +377,50 @@ export const SatelliteAudit: React.FC<SatelliteAuditProps> = ({
         </div>
       </div>
 
+      {reviewMessage && <div role="status" className="ui-note is-green">{reviewMessage}</div>}
+
       {/* The 4 Inputs Architecture Diagram for Judges */}
-      <div className="glass-panel p-4 bg-slate-950/60 flex flex-col gap-3">
-        <h4 className="font-bold text-xs uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
-          <Layers className="w-4 h-4 text-emerald-400" />
-          <span>Why This Survives Cross-Examination: The 4-Input Defense Layer</span>
+      <div className="flex flex-col gap-4">
+        <h4 className="ui-eyebrow">
+          <Layers className="w-4 h-4" />
+          <span>How we check a field</span>
         </h4>
 
-        <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 text-xs">
-          <div className="bg-slate-900/90 p-3 rounded-lg border border-slate-800">
-            <div className="text-emerald-400 font-bold mb-1">1. Registered Polygons</div>
-            <p className="text-slate-400 text-[11px]">
-              Centimeter-accurate field boundaries drawn pre-harvest. No vague village approximations.
+        <div className="proof-steps">
+          <div className="proof-step">
+            <div className="proof-step-title">1. Field boundary</div>
+            <p>
+              We keep the field boundary source and its verification status. A hand-drawn boundary is not treated as official land-record proof.
             </p>
           </div>
 
-          <div className="bg-slate-900/90 p-3 rounded-lg border border-slate-800">
-            <div className="text-emerald-400 font-bold mb-1">2. NASA FIRMS VIIRS</div>
-            <p className="text-slate-400 text-[11px]">
-              375m spatial resolution active thermal fire points polled nightly from NOAA-20 & Suomi-NPP satellites.
+          <div className="proof-step">
+            <div className="proof-step-title">2. Satellite check</div>
+            <p>
+              Satellite observations are supporting evidence. They do not by themselves prove that no burning happened.
             </p>
           </div>
 
-          <div className="bg-slate-900/90 p-3 rounded-lg border border-slate-800">
-            <div className="text-emerald-400 font-bold mb-1">3. Weighment Receipts</div>
-            <p className="text-slate-400 text-[11px]">
-              QR tagged straw lots checked at storage depots with moisture & silica quality specs.
+          <div className="proof-step">
+            <div className="proof-step-title">3. Pickup & weight proof</div>
+            <p>
+              Photos, pickup records and weight records can be linked when they are available.
             </p>
           </div>
 
-          <div className="bg-slate-900/90 p-3 rounded-lg border border-slate-800">
-            <div className="text-emerald-400 font-bold mb-1">4. UPI Payout Ledger</div>
-            <p className="text-slate-400 text-[11px]">
-              Indisputable proof that money was settled directly to the farmer within 90s of clearance.
+          <div className="proof-step">
+            <div className="proof-step-title">4. Payment status</div>
+            <p>
+              Payment is not connected in this release, so we never show a payment as completed when it is not.
             </p>
           </div>
         </div>
       </div>
 
-      {/* Certificate Modal */}
+      {/* Record Modal */}
       {selectedFieldForCert && (
         <CarbonCertificate
-          certificate={generateNonBurnCertificate(selectedFieldForCert)}
+          certificate={generateNonBurnCertificate(selectedFieldForCert, { illustrative: demoMode })}
           onClose={() => setSelectedFieldForCert(null)}
         />
       )}

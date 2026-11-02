@@ -58,8 +58,8 @@ export const SatelliteEarth3D: React.FC<SatelliteEarth3DProps> = ({
 
     // 1. Scene, Camera, Renderer
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x040711);
-    scene.fog = new THREE.FogExp2(0x040711, 0.025);
+    scene.background = new THREE.Color(0xf3f8ed);
+    scene.fog = new THREE.FogExp2(0xf3f8ed, 0.025);
     sceneRef.current = scene;
 
     const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 1000);
@@ -74,7 +74,7 @@ export const SatelliteEarth3D: React.FC<SatelliteEarth3DProps> = ({
     rendererRef.current = renderer;
 
     // 2. Lights
-    const ambientLight = new THREE.AmbientLight(0x1e293b, 1.8);
+    const ambientLight = new THREE.AmbientLight(0xffffff, 2.1);
     scene.add(ambientLight);
 
     const sunLight = new THREE.DirectionalLight(0xffffff, 2.5);
@@ -120,7 +120,7 @@ export const SatelliteEarth3D: React.FC<SatelliteEarth3DProps> = ({
     // Glowing Circular Platform Rim
     const rimGeo = new THREE.RingGeometry(11.8, 12.2, 64);
     const rimMat = new THREE.MeshBasicMaterial({
-      color: 0x10b981,
+      color: 0x2e9554,
       side: THREE.DoubleSide,
       transparent: true,
       opacity: 0.4,
@@ -142,7 +142,7 @@ export const SatelliteEarth3D: React.FC<SatelliteEarth3DProps> = ({
     terrainGeo.computeVertexNormals();
 
     const terrainMat = new THREE.MeshStandardMaterial({
-      color: 0x091422,
+      color: 0xdfe9d8,
       roughness: 0.7,
       metalness: 0.2,
       wireframe: false,
@@ -153,7 +153,7 @@ export const SatelliteEarth3D: React.FC<SatelliteEarth3DProps> = ({
 
     // Wireframe overlay for high-tech satellite GIS look
     const wireMat = new THREE.MeshBasicMaterial({
-      color: 0x064e3b,
+      color: 0x6f9b68,
       wireframe: true,
       transparent: true,
       opacity: 0.35,
@@ -178,8 +178,8 @@ export const SatelliteEarth3D: React.FC<SatelliteEarth3DProps> = ({
       const hexRadius = Math.max(0.6, Math.min(1.4, field.acreage * 0.22));
       const hexGeo = new THREE.CylinderGeometry(hexRadius, hexRadius, 0.15, 6);
       const hexMat = new THREE.MeshStandardMaterial({
-        color: 0x10b981,
-        emissive: 0x064e3b,
+        color: 0x2e9554,
+        emissive: 0x1f7a46,
         emissiveIntensity: 0.5,
         transparent: true,
         opacity: 0.75,
@@ -187,7 +187,7 @@ export const SatelliteEarth3D: React.FC<SatelliteEarth3DProps> = ({
       const hexMesh = new THREE.Mesh(hexGeo, hexMat);
       fieldGroup.add(hexMesh);
 
-      // 3D Protective Dome (Zero Burn Shield)
+      // 3D Protective Dome (Evidence boundary)
       const domeGeo = new THREE.SphereGeometry(hexRadius * 1.1, 16, 12, 0, Math.PI * 2, 0, Math.PI / 2);
       const domeMat = new THREE.MeshBasicMaterial({
         color: 0x34d399,
@@ -202,7 +202,7 @@ export const SatelliteEarth3D: React.FC<SatelliteEarth3DProps> = ({
       // Vertical Hologram Pillar
       const pillarGeo = new THREE.CylinderGeometry(0.04, 0.04, 2.2, 8);
       const pillarMat = new THREE.MeshBasicMaterial({
-        color: 0x10b981,
+        color: 0x2e9554,
         transparent: true,
         opacity: 0.6,
       });
@@ -230,7 +230,7 @@ export const SatelliteEarth3D: React.FC<SatelliteEarth3DProps> = ({
       fieldObjects.push(fieldGroup);
     });
 
-    // 6. NASA FIRMS Active Fire Anomalies (3D Red Pulsing Volcano Plumes)
+    // 6. FIRMS / VIIRS thermal observations (3D Red Pulsing Volcano Plumes)
     const fireObjects: THREE.Object3D[] = [];
     fireEvents.forEach((fire) => {
       const scaleFactor = 35;
@@ -284,7 +284,7 @@ export const SatelliteEarth3D: React.FC<SatelliteEarth3DProps> = ({
       fireObjects.push(fireGroup);
     });
 
-    // 7. NASA NOAA-20 / Sentinel-2 Satellite Model in 3D Orbit
+    // 7. Illustrative satellite / sensor visualization
     const satelliteGroup = new THREE.Group();
     scene.add(satelliteGroup);
 
@@ -468,7 +468,7 @@ export const SatelliteEarth3D: React.FC<SatelliteEarth3DProps> = ({
           setSelectedBeacon({
             type: 'FIELD',
             title: `${f.khasra_no} (${f.farmer_name})`,
-            desc: `Zero FIRMS fire points • Sentinel-2 verified • 48h SLA`,
+            desc: `No thermal observation in current record • supporting evidence only`,
             tempOrAcreage: `${f.acreage} Acres (${f.paddy_variety})`,
             coords: `${f.center.lat.toFixed(4)}°N, ${f.center.lng.toFixed(4)}°E`,
           });
@@ -477,7 +477,7 @@ export const SatelliteEarth3D: React.FC<SatelliteEarth3DProps> = ({
           const fire: BurnEvent = parent.userData.fireData;
           setSelectedBeacon({
             type: 'FIRE',
-            title: `NASA FIRMS VIIRS Active Fire`,
+            title: `FIRMS / VIIRS thermal observation`,
             desc: `Unregistered field (${fire.nearest_village}) • No Nirdhoom contract`,
             tempOrAcreage: `Brightness Temp: ${fire.brightness_temp_kelvin} K (Confidence: ${fire.confidence}%)`,
             coords: `${fire.firms_point.lat.toFixed(4)}°N, ${fire.firms_point.lng.toFixed(4)}°E`,
@@ -529,7 +529,7 @@ export const SatelliteEarth3D: React.FC<SatelliteEarth3DProps> = ({
   };
 
   return (
-    <div className="relative w-full h-[520px] lg:h-[640px] rounded-2xl overflow-hidden border border-emerald-500/40 shadow-2xl bg-[#040711]">
+    <div className="satellite-3d-surface relative w-full h-[520px] lg:h-[640px] rounded-2xl overflow-hidden border border-emerald-500/40 shadow-2xl bg-[#040711]">
       {/* 3D WebGL Canvas */}
       <div ref={mountRef} className="w-full h-full cursor-grab active:cursor-grabbing" />
 
@@ -542,12 +542,12 @@ export const SatelliteEarth3D: React.FC<SatelliteEarth3DProps> = ({
           <div>
             <div className="flex items-center gap-1.5">
               <span className="text-xs font-black text-white uppercase tracking-wider font-['Outfit']">
-                3D Agricultural Digital Twin
+                3D spatial evidence view
               </span>
-              <span className="badge badge-emerald text-[9px]">NASA FIRMS LIVE</span>
+              <span className="badge badge-emerald text-[9px]">FIRMS / VIIRS layer</span>
             </div>
             <div className="text-[10px] text-slate-400 font-mono">
-              NOAA-20 VIIRS 375m • Orbit Alt: 824 km • Pass: 14:28 UTC
+              Illustrative spatial model • event records shown below
             </div>
           </div>
         </div>
@@ -556,12 +556,12 @@ export const SatelliteEarth3D: React.FC<SatelliteEarth3DProps> = ({
         <div className="bg-slate-950/85 backdrop-blur-md border border-slate-800 px-3.5 py-1.5 rounded-xl pointer-events-auto flex items-center gap-4 text-xs font-mono">
           <div className="flex items-center gap-1.5 text-emerald-400">
             <ShieldCheck className="w-3.5 h-3.5" />
-            <span>0 Burns (Nirdhoom)</span>
+            <span>Evidence review (Nirdhoom)</span>
           </div>
           <span className="text-slate-700">|</span>
           <div className="flex items-center gap-1.5 text-red-400">
             <Flame className="w-3.5 h-3.5 animate-pulse" />
-            <span>8 Active Fires (Unregistered)</span>
+            <span>{fireEvents.length} thermal observations in current record</span>
           </div>
         </div>
       </div>
@@ -598,7 +598,7 @@ export const SatelliteEarth3D: React.FC<SatelliteEarth3DProps> = ({
           onClick={focusSangrur}
           className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold cursor-pointer"
         >
-          Focus Hotspot
+          Focus field area
         </button>
 
         <button
@@ -636,7 +636,7 @@ export const SatelliteEarth3D: React.FC<SatelliteEarth3DProps> = ({
           </p>
 
           <div className="flex justify-between items-center pt-2 border-t border-slate-800/80 text-[11px]">
-            <span className="text-slate-400">Metric Telemetry:</span>
+            <span className="text-slate-400">Record metric:</span>
             <strong
               className={`font-mono font-bold ${
                 selectedBeacon.type === 'FIELD' ? 'text-emerald-400' : 'text-red-400'
@@ -652,12 +652,12 @@ export const SatelliteEarth3D: React.FC<SatelliteEarth3DProps> = ({
       <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 hidden md:flex items-center gap-3 bg-slate-950/80 backdrop-blur-md px-3.5 py-1 rounded-full border border-slate-800 text-[11px] text-slate-300 pointer-events-none">
         <span className="flex items-center gap-1.5">
           <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 inline-block shadow shadow-emerald-400"></span>
-          <span>Nirdhoom Shield (0 Fires)</span>
+          <span>Registered fields / evidence boundary</span>
         </span>
         <span className="text-slate-700">|</span>
         <span className="flex items-center gap-1.5">
           <span className="w-2.5 h-2.5 rounded-full bg-red-500 animate-ping inline-block shadow shadow-red-500"></span>
-          <span className="text-red-400">VIIRS Active Fire Flare</span>
+          <span className="text-red-400">FIRMS / VIIRS thermal observation</span>
         </span>
         <span className="text-slate-700">|</span>
         <span className="text-slate-400">Drag to Orbit • Scroll to Zoom</span>

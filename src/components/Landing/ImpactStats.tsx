@@ -48,7 +48,7 @@ const AnimCounter: React.FC<{
   );
 };
 
-/* ── Real Statistics from CAQM, NASA FIRMS, Punjab Agriculture Dept ── */
+/* ── Public context statistics; never presented as NIRDHOOM outcomes ── */
 const PUNJAB_FIRE_STATS = [
   { year: '2020', fires: 76929, color: '#ef4444' },
   { year: '2021', fires: 71304, color: '#f97316' },
@@ -69,34 +69,34 @@ const DISTRICT_HOTSPOTS = [
 
 const FARMER_TESTIMONIALS = [
   {
-    name: 'Gurpreet Singh Brar',
-    village: 'Ubhawal, Sangrur',
+    name: 'Illustrative farmer',
+    village: 'Demo scenario',
     quote: 'ਮੈਂ 18 ਦਿਨ ਪਹਿਲਾਂ ਬੁਕ ਕੀਤਾ, ਬੇਲਰ ਆਇਆ ਡੈੱਡਲਾਈਨ ਤੋਂ 2 ਦਿਨ ਪਹਿਲਾਂ। ਕਣਕ ਦੀ ਬਿਜਾਈ ਸਮੇਂ ਸਿਰ ਹੋ ਗਈ।',
     quoteEn: 'I booked 18 days early, baler came 2 days before deadline. Wheat sowing happened on time.',
     acres: 8.5,
     crop: 'PR-126',
     avatar: '/images/farmer_gurpreet.jpg',
-    savings: '₹4,500 penalty guarantee gave me peace of mind',
+    savings: 'Illustrative booking scenario; payment and penalties are disabled',
   },
   {
-    name: 'Manpreet Kaur Sandhu',
-    village: 'Bhalwan, Dhuri',
-    quote: 'ਪਹਿਲਾਂ ਫ਼ੋਨ ਤੇ ਫ਼ੋਨ ਕਰਨੇ ਪੈਂਦੇ ਸੀ। ਹੁਣ WhatsApp ਤੇ ਬੁੱਕ ਕਰ ਲੈਂਦੇ ਹਾਂ, UPI ਤੇ ਪੈਸੇ 90 ਸਕਿੰਟ ਵਿਚ ਆ ਜਾਂਦੇ ਹਨ।',
-    quoteEn: 'Earlier I had to make endless calls. Now I book on WhatsApp, money comes in 90 seconds via UPI.',
+    name: 'Illustrative farmer',
+    village: 'Demo scenario',
+    quote: 'ਪਹਿਲਾਂ ਫ਼ੋਨ ਤੇ ਫ਼ੋਨ ਕਰਨੇ ਪੈਂਦੇ ਸੀ। ਹੁਣ Telegram ਤੇ ਬੁੱਕ ਕਰ ਲੈਂਦੇ ਹਾਂ, Telegram ਤੇ ਬੁਕਿੰਗ ਦਾ ਸਟੇਟਸ ਇਕ ਥਾਂ ਵੇਖ ਸਕਦੇ ਹਾਂ।',
+    quoteEn: 'Earlier I had to make endless calls. Now I can send a booking request through Telegram and see the field status in one place.',
     acres: 6.2,
     crop: 'Basmati-1509',
     avatar: '/images/farmer_manpreet.jpg',
-    savings: '₹3,625 settled via UPI within 46 seconds',
+    savings: 'Illustrative booking scenario • payment integration disabled',
   },
   {
-    name: 'Harinder Singh Dhillon',
-    village: 'Kheri Chandwan, Sunam',
-    quote: 'ਮੇਰੇ ਗੁਆਂਢੀ ਅੱਗ ਲਾਉਂਦੇ ਰਹੇ, ਪਰ ਮੈਂ ₹6,750 ਕਮਾ ਲਏ ਅਤੇ ਕਾਰਬਨ ਕ੍ਰੈਡਿਟ ਦਾ ਸਰਟੀਫ਼ਿਕੇਟ ਵੀ ਮਿਲਿਆ।',
-    quoteEn: 'My neighbors kept burning, but I earned ₹6,750 and also got a carbon credit certificate.',
+    name: 'Illustrative farmer',
+    village: 'Demo scenario',
+    quote: 'ਇਹ demo scenario ਹੈ — verification ਤੋਂ ਬਾਅਦ residue ਦੀ downstream value ਸਮਝਾਉਣ ਲਈ।',
+    quoteEn: 'Illustrative scenario showing how verified residue could unlock downstream value; no payment or carbon certificate is issued here.',
     acres: 12.0,
     crop: 'Pusa-44',
     avatar: '/images/punjab_farmer_hero.jpg',
-    savings: 'Satellite verified 0-burn for Verra VM0042 carbon credit',
+    savings: 'Synthetic example • carbon methodology not configured',
   },
 ];
 
@@ -125,11 +125,11 @@ export const ImpactStats: React.FC<ImpactStatsProps> = ({ onNavigateTab }) => {
                   The Crisis: Punjab's 18.81 Million Tonnes of Paddy Straw
                 </h2>
                 <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-500/15 text-red-400 font-mono font-bold border border-red-500/30 animate-live-pulse">
-                  REAL DATA
+                  PUBLIC CONTEXT
                 </span>
               </div>
               <p className="text-xs text-slate-400 mt-0.5">
-                Source: CAQM, IITM DSS, Punjab Agriculture Dept, NASA FIRMS
+                Source: public research references • provider observations only when configured
               </p>
             </div>
           </div>
@@ -142,7 +142,7 @@ export const ImpactStats: React.FC<ImpactStatsProps> = ({ onNavigateTab }) => {
                 src="/images/parali_burning.jpg"
                 alt="Stubble burning fields in Punjab creating severe air pollution"
                 className="w-full h-56 object-cover object-center group-hover:scale-105 transition-transform duration-500 opacity-90"
-              />
+               loading="lazy" decoding="async" />
               <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/30 to-transparent" />
               <div className="absolute bottom-4 left-4 right-4">
                 <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-red-500/25 text-red-400 border border-red-500/40 mb-2 inline-block">
@@ -161,19 +161,19 @@ export const ImpactStats: React.FC<ImpactStatsProps> = ({ onNavigateTab }) => {
             <div className="rounded-2xl overflow-hidden border border-emerald-500/25 relative group bg-slate-950">
               <img
                 src="/images/baling_fleet.jpg"
-                alt="Subsidised CRM baler fleet clearing paddy straw from Punjab fields"
+                alt="CRM baler fleet clearing crop residue from a Punjab field"
                 className="w-full h-56 object-cover object-center group-hover:scale-105 transition-transform duration-500"
-              />
+               loading="lazy" decoding="async" />
               <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/30 to-transparent" />
               <div className="absolute bottom-4 left-4 right-4">
                 <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-emerald-500/25 text-emerald-400 border border-emerald-500/40 mb-2 inline-block">
                   ✅ THE NIRDHOOM REFRAME
                 </span>
                 <h4 className="text-sm font-bold text-white">
-                  1.25 lakh CRM machines already deployed — we dispatch idle ones with zero capex
+                  CRM machinery is widely distributed — NIRDHOOM coordinates available capacity without owning the fleet
                 </h4>
                 <p className="text-[11px] text-slate-300 mt-1 leading-relaxed">
-                  50-80% subsidised baler fleet sitting in CHCs &amp; FPOs. Guaranteed clearance + satellite verification + &lt;90s UPI payout.
+                  Existing CRM machinery network. NIRDHOOM adds capacity-aware dispatch, layered evidence review and a payment-disabled completion workflow.
                 </p>
               </div>
             </div>
@@ -211,7 +211,7 @@ export const ImpactStats: React.FC<ImpactStatsProps> = ({ onNavigateTab }) => {
               <div className="text-2xl font-black font-mono text-teal-400">
                 <AnimCounter target={125000} prefix="" />
               </div>
-              <div className="text-[10px] text-slate-400 mt-1">Operational subsidised machines in Punjab</div>
+              <div className="text-[10px] text-slate-400 mt-1">CRM machine capacity • source year/definition dependent</div>
             </div>
 
             <div className="impact-stat">
@@ -220,9 +220,9 @@ export const ImpactStats: React.FC<ImpactStatsProps> = ({ onNavigateTab }) => {
                 CRM Subsidy
               </div>
               <div className="text-2xl font-black font-mono text-cyan-400">
-                ₹<AnimCounter target={576} suffix=" Cr" />
+                ₹<AnimCounter target={544.15} decimals={2} suffix=" Cr" />
               </div>
-              <div className="text-[10px] text-slate-400 mt-1">Allocated for 2026-27 season by CAQM</div>
+              <div className="text-[10px] text-slate-400 mt-1">Central CRM allocation for 2026-27 • verify current scheme notice</div>
             </div>
           </div>
 
@@ -288,7 +288,7 @@ export const ImpactStats: React.FC<ImpactStatsProps> = ({ onNavigateTab }) => {
               Punjab Malwa Belt: District-Level Hotspot Intelligence
             </h2>
             <p className="text-xs text-slate-400 mt-0.5">
-              Sangrur cluster is Nirdhoom's launch district — highest fire density, maximum idle CHC infrastructure
+              Sangrur cluster is candidate research area; no live pilot is claimed — highest fire density, maximum idle CHC infrastructure
             </p>
           </div>
         </div>
@@ -339,7 +339,7 @@ export const ImpactStats: React.FC<ImpactStatsProps> = ({ onNavigateTab }) => {
                           ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30'
                           : 'bg-slate-800 text-slate-400 border border-slate-700'
                       }`}>
-                        {idx === 0 ? '● ACTIVE PILOT' : 'EXPANSION Q2'}
+                        {idx === 0 ? '● PROTOTYPE / RESEARCH' : 'RESEARCH CONTEXT'}
                       </span>
                     </td>
                   </tr>
@@ -374,14 +374,14 @@ export const ImpactStats: React.FC<ImpactStatsProps> = ({ onNavigateTab }) => {
           <div>
             <div className="flex items-center gap-2">
               <h2 className="text-lg font-bold text-white font-['Outfit']">
-                Voices From the Field: Real Farmer Experiences
+                Illustrative Field Scenarios: Illustrative Farmer Scenarios
               </h2>
               <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-500/15 text-amber-400 font-mono font-bold border border-amber-500/30">
                 SANGRUR CLUSTER
               </span>
             </div>
             <p className="text-xs text-slate-400 mt-0.5">
-              Authentic testimonials from farmers in our Sangrur pilot — reliability beats rate, every time
+              Synthetic UX examples for the prototype — no live pilot testimonial is claimed.
             </p>
           </div>
         </div>
@@ -395,7 +395,7 @@ export const ImpactStats: React.FC<ImpactStatsProps> = ({ onNavigateTab }) => {
                   src={t.avatar}
                   alt={t.name}
                   className="w-12 h-12 rounded-full object-cover border-2 border-amber-500/30"
-                />
+                 loading="lazy" decoding="async" />
                 <div>
                   <h4 className="text-sm font-bold text-white">{t.name}</h4>
                   <p className="text-[11px] text-amber-400 font-mono">{t.village}</p>
@@ -420,9 +420,9 @@ export const ImpactStats: React.FC<ImpactStatsProps> = ({ onNavigateTab }) => {
                     {t.acres} ac · {t.crop}
                   </span>
                 </div>
-                <span className="text-emerald-400 font-semibold font-mono flex items-center gap-1">
+                <span className="text-slate-400 font-semibold font-mono flex items-center gap-1">
                   <ShieldCheck className="w-3 h-3" />
-                  0 Burns
+                  No field-level claim
                 </span>
               </div>
               <div className="mt-2 text-[10px] text-emerald-300 font-mono flex items-center gap-1">
@@ -454,7 +454,7 @@ export const ImpactStats: React.FC<ImpactStatsProps> = ({ onNavigateTab }) => {
           {[
             {
               title: 'CBG / Biogas',
-              price: '₹1,850/T',
+              price: 'Indicative',
               margin: 'LOW',
               icon: Factory,
               color: 'text-slate-400',
@@ -465,34 +465,34 @@ export const ImpactStats: React.FC<ImpactStatsProps> = ({ onNavigateTab }) => {
             },
             {
               title: 'Mushroom Substrate',
-              price: '₹3,850/T',
+              price: 'Indicative',
               margin: 'ULTRA HIGH',
               icon: TreePine,
               color: 'text-emerald-400',
               borderColor: 'border-emerald-500/30',
-              desc: 'Fresh, golden, low-silica PR-126 straw. 2.1× CBG rate with net 7-day payment. Premium ESG offtake.',
+              desc: 'Illustrative premium-offtake pathway; live buyer price, quality and settlement terms are not configured.',
               buyers: 'Punjab Agro-Fungi Ltd',
               image: '/images/offtake_facility.jpg',
             },
             {
               title: 'Biochar',
-              price: '₹2,650/T',
+              price: 'Indicative',
               margin: 'HIGH',
               icon: Globe,
               color: 'text-teal-400',
               borderColor: 'border-teal-500/30',
-              desc: 'Mobile pyrolysis producing soil-amending biochar. Qualifies for secondary soil carbon removal credits.',
+              desc: 'Illustrative biochar pathway; carbon eligibility depends on a configured methodology and verification.',
               buyers: 'Takachar, AirTerra',
               image: '/images/baling_fleet.jpg',
             },
             {
               title: 'Cattle Fodder',
-              price: '₹2,400/T',
+              price: 'Indicative',
               margin: 'MEDIUM',
               icon: Heart,
               color: 'text-amber-400',
               borderColor: 'border-amber-500/30',
-              desc: '4% urea spray breaks ligno-cellulosic bond, turning parali into digestible cattle roughage for dairy cooperatives.',
+              desc: 'Illustrative fodder pathway; actual quality, safety and buyer requirements must be verified by the offtaker.',
               buyers: 'Malwa Dairy Co-op',
               image: '/images/punjab_farm_hero.jpg',
             },
@@ -507,7 +507,7 @@ export const ImpactStats: React.FC<ImpactStatsProps> = ({ onNavigateTab }) => {
                   src={pathway.image}
                   alt={pathway.title}
                   className="w-full h-28 object-cover group-hover:scale-105 transition-transform duration-500"
-                />
+                 loading="lazy" decoding="async" />
                 <div className="p-4">
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2">
@@ -535,7 +535,7 @@ export const ImpactStats: React.FC<ImpactStatsProps> = ({ onNavigateTab }) => {
         </div>
 
         <div className="mt-5 p-4 rounded-xl bg-gradient-to-r from-emerald-950/30 to-teal-950/30 border border-emerald-500/20 text-xs text-slate-300 leading-relaxed">
-          <strong className="text-emerald-300">Nirdhoom's Quality-Based Auction:</strong> Unlike traditional dump-to-CBG at ₹1,850/T, our multi-offtake auction routes straw by quality (moisture %, silica content, variety) to the highest-margin buyer. Mushroom substrate at ₹3,850/T delivers 2.1× returns vs CBG baseline. Early booking farmers get priority access to premium offtakes.
+          <strong className="text-emerald-300">Nirdhoom's Quality-Based Auction:</strong> The multi-offtake model can route lots by moisture, quality and buyer requirements. Prices and margins shown above are illustrative until live buyer contracts are connected.
         </div>
       </section>
     </div>

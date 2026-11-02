@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { useAppLanguage } from '../../i18n/LanguageContext';
 import { 
   CheckCircle2, 
   MapPin, 
@@ -15,87 +16,385 @@ import {
   Clock
 } from 'lucide-react';
 import { Field, Machine } from '../../types';
-import { UpiSettlementModal } from './UpiSettlementModal';
+import { supabase } from '../../lib/supabase';
+import { queuedEvidenceCount, queueEvidence, registerEvidenceQueueReplay } from '../../lib/offlineEvidenceQueue';
+import { validateEvidenceFile } from '../../lib/evidenceValidation';
 
 interface BalerPWAProps {
   fields: Field[];
   activeMachine: Machine;
+  demoMode: boolean;
   onJobCompleted: (fieldId: string, amount: number) => void;
 }
 
 export const BalerPWA: React.FC<BalerPWAProps> = ({
   fields,
   activeMachine,
+  demoMode,
   onJobCompleted,
 }) => {
+  const { t } = useAppLanguage();
   const [selectedFieldId, setSelectedFieldId] = useState<string>(fields[0]?.id || 'FIELD-101');
-  const [moistureValue, setMoistureValue] = useState<number>(14.2);
-  const [balesCount, setBalesCount] = useState<number>(38);
-  const [showUpiModal, setShowUpiModal] = useState(false);
-  const [offlineSyncActive, setOfflineSyncActive] = useState(true);
-
+  const [moistureValue, setMoistureValue] = useState<number | null>(null);
+  const [balesCount, setBalesCount] = useState<number | null>(null);
+  const [residueTonnes, setResidueTonnes] = useState<number>(0);
+  const [jobStatus, setJobStatus] = useState<string | null>(null);
+  const [jobBusy, setJobBusy] = useState(false);
+  const [jobMessage, setJobMessage] = useState('');
+  const [offlineSyncActive, setOfflineSyncActive] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true);
   const currentField = fields.find((f) => f.id === selectedFieldId) || fields[0];
-  const isJobFinished = currentField.status === 'CLEARED_PENDING_AUDIT' || currentField.status === 'VERIFIED_NON_BURN';
+  const displayedMoisture = demoMode ? (moistureValue ?? 14.2) : moistureValue;
+  const displayedBalesCount = demoMode ? (balesCount ?? 38) : balesCount;
+  const completionMeasurementsValid = Number.isFinite(residueTonnes) && residueTonnes > 0
+    && moistureValue !== null && Number.isFinite(moistureValue) && moistureValue >= 0 && moistureValue <= 100
+    && balesCount !== null && Number.isInteger(balesCount) && balesCount >= 1 && balesCount <= 1000000;
+
+  useEffect(() => {
+    // Never carry demo controls into a live session as if they were field measurements.
+    setMoistureValue(null);
+    setBalesCount(null);
+    setResidueTonnes(0);
+  }, [demoMode]);
+
+  // Network state is independent of GPS permission and demo/live mode.
+  useEffect(() => {
+    const updateNetworkState = () => setOfflineSyncActive(navigator.onLine);
+    updateNetworkState();
+    window.addEventListener('online', updateNetworkState);
+    window.addEventListener('offline', updateNetworkState);
+    return () => {
+      window.removeEventListener('online', updateNetworkState);
+      window.removeEventListener('offline', updateNetworkState);
+    };
+  }, []);
+
+  useEffect(() => {
+    const client = supabase;
+    if (demoMode || !client || typeof navigator === 'undefined' || !navigator.geolocation) return;
+    let cancelled = false;
+
+    const syncGps = async (position: GeolocationPosition) => {
+      if (cancelled) return;
+      const next = {
+        lat: position.coords.latitude,
+        lng: position.coords.longitude,
+        accuracy: position.coords.accuracy,
+      };
+      setGpsState({ ...next, recordedAt: position.timestamp || Date.now() });
+      if (Date.now() - lastGpsWrite.current < 15000) return;
+      lastGpsWrite.current = Date.now();
+
+      const { data } = await client.auth.getSession();
+      const user = data.session?.user;
+      if (!user) return;
+
+      await client.from('machine_locations').insert({
+        machine_id: activeMachine.id,
+        latitude: next.lat,
+        longitude: next.lng,
+        speed_kmh: Number.isFinite(position.coords.speed || NaN) ? Math.max(0, Number(position.coords.speed) * 3.6) : null,
+        source: 'operator-pwa',
+        recorded_at: new Date(position.timestamp).toISOString(),
+      });
+    };
+
+    const watchId = navigator.geolocation.watchPosition(syncGps, () => setGpsState(null), {
+      enableHighAccuracy: true,
+      maximumAge: 10000,
+      timeout: 15000,
+    });
+    return () => {
+      cancelled = true;
+      navigator.geolocation.clearWatch(watchId);
+    };
+  }, [activeMachine.id, demoMode]);
+
+  useEffect(() => {
+    if (demoMode) return;
+    let dispose: (() => void) | undefined;
+    void registerEvidenceQueueReplay().then((cleanup) => { dispose = cleanup; });
+    const refresh = async () => setQueuedEvidence(await queuedEvidenceCount());
+    void refresh();
+    const timer = window.setInterval(refresh, 5000);
+    return () => {
+      if (dispose) dispose();
+      window.clearInterval(timer);
+    };
+  }, [demoMode]);
+
+  const handleEvidenceCapture = async (file: File) => {
+    setEvidenceMessage('');
+    const validationError = await validateEvidenceFile(file, file.name);
+    if (validationError) {
+      setEvidenceMessage(validationError);
+      return;
+    }
+    const capturedAt = new Date().toISOString();
+    const gps = gpsState;
+    if (demoMode) {
+      setEvidenceMessage('Demo photo captured locally; no evidence record was uploaded.');
+      return;
+    }
+
+    const client = supabase;
+    if (!client) {
+      setEvidenceMessage('Live Supabase is not configured. Evidence was not uploaded.');
+      return;
+    }
+    const { data } = await client.auth.getSession();
+    const user = data.session?.user;
+    if (!user) {
+      setEvidenceMessage('Sign in as the assigned operator before uploading evidence.');
+      return;
+    }
+
+    if (!navigator.onLine) {
+      await queueEvidence({
+        ownerUserId: user.id,
+        fieldId: currentField.dbId || currentField.id,
+        fileName: file.name,
+        fileType: file.type,
+        blob: file,
+        capturedAt,
+        latitude: gps?.lat ?? null,
+        longitude: gps?.lng ?? null,
+        accuracyM: gps?.accuracy ?? null,
+      });
+      setQueuedEvidence(await queuedEvidenceCount());
+      setEvidenceMessage('Offline: evidence saved to the device queue and will sync when the connection returns.');
+      return;
+    }
+
+    const id = crypto.randomUUID();
+    const path = `${user.id}/${currentField.dbId || currentField.id}/${id}-${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+    const upload = await client.storage.from('evidence').upload(path, file, { contentType: file.type, upsert: false });
+    if (upload.error) {
+      await queueEvidence({
+        ownerUserId: user.id,
+        fieldId: currentField.dbId || currentField.id,
+        fileName: file.name,
+        fileType: file.type,
+        blob: file,
+        capturedAt,
+        latitude: gps?.lat ?? null,
+        longitude: gps?.lng ?? null,
+        accuracyM: gps?.accuracy ?? null,
+      });
+      setQueuedEvidence(await queuedEvidenceCount());
+      setEvidenceMessage(`Upload unavailable; evidence queued safely for replay. ${upload.error.message}`);
+      return;
+    }
+
+    const bytes = await file.arrayBuffer();
+    const digest = await crypto.subtle.digest('SHA-256', bytes);
+    const hash = Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, '0')).join('');
+    const { error } = await client.from('evidence_assets').insert({
+      field_id: currentField.dbId || currentField.id,
+      kind: 'field_photo',
+      storage_path: path,
+      source: 'operator-pwa',
+      captured_at: capturedAt,
+      latitude: gps?.lat ?? null,
+      longitude: gps?.lng ?? null,
+      gps_accuracy_m: gps?.accuracy ?? null,
+      sha256: hash,
+      created_by: user.id,
+      sync_source: 'online',
+      metadata: { file_name: file.name, mime_type: file.type },
+    });
+
+    if (error) {
+      await client.storage.from('evidence').remove([path]);
+      setEvidenceMessage(`Evidence metadata could not be recorded: ${error.message}`);
+      return;
+    }
+    setEvidenceMessage('Evidence uploaded, hashed and linked to the field record.');
+  };
+
+  const [gpsState, setGpsState] = useState<{ lat: number; lng: number; accuracy: number; recordedAt: number } | null>(null);
+  const [evidenceMessage, setEvidenceMessage] = useState('');
+  const [queuedEvidence, setQueuedEvidence] = useState(0);
+  const lastGpsWrite = useRef(0);
+  const [gpsNow, setGpsNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!gpsState) return;
+    const timer = window.setInterval(() => setGpsNow(Date.now()), 5000);
+    return () => window.clearInterval(timer);
+  }, [gpsState?.recordedAt]);
+
+  const gpsAgeSeconds = gpsState ? Math.max(0, Math.round((gpsNow - gpsState.recordedAt) / 1000)) : null;
+  const gpsStale = gpsAgeSeconds !== null && gpsAgeSeconds > 60;
+
+  useEffect(() => {
+    const client = supabase;
+    if (demoMode || !client || !currentField) return;
+    let cancelled = false;
+    const loadJob = async () => {
+      const { data, error } = await client.from('jobs').select('id,status,booking_id').eq('field_id', currentField.dbId || currentField.id)
+        .in('status', ['ASSIGNED', 'ARRIVED', 'BALING', 'PROOF_PENDING']).order('created_at', { ascending: false }).limit(1).maybeSingle();
+      if (!cancelled) setJobStatus(error ? null : String(data?.status || ''));
+    };
+    void loadJob();
+    return () => { cancelled = true; };
+  }, [currentField?.dbId, currentField?.id, demoMode]);
+
+  const advanceLiveJob = async () => {
+    const client = supabase;
+    if (demoMode || !client || !currentField || jobBusy) return;
+    const nextByStatus: Record<string, string> = {
+      ASSIGNED: 'ARRIVED',
+      ARRIVED: 'BALING',
+      BALING: 'PROOF_PENDING',
+      PROOF_PENDING: 'COMPLETED',
+    };
+    const next = jobStatus ? nextByStatus[jobStatus] : undefined;
+    if (!next) {
+      setJobMessage('No active server job is assigned to this field yet.');
+      return;
+    }
+    if (next === 'COMPLETED' && (!Number.isFinite(residueTonnes) || residueTonnes <= 0)) {
+      setJobMessage('Enter the measured residue quantity in tonnes before completing this job.');
+      return;
+    }
+    if (next === 'COMPLETED' && (moistureValue === null || !Number.isFinite(moistureValue) || moistureValue < 0 || moistureValue > 100)) {
+      setJobMessage('Enter a measured moisture percentage between 0 and 100 before completing this job.');
+      return;
+    }
+    if (next === 'COMPLETED' && (balesCount === null || !Number.isInteger(balesCount) || balesCount < 1 || balesCount > 1000000)) {
+      setJobMessage('Enter the measured bale count before completing this job.');
+      return;
+    }
+
+    setJobBusy(true);
+    setJobMessage('');
+    try {
+      const lookup = await client
+        .from('jobs')
+        .select('id,status,booking_id,machine_id')
+        .eq('field_id', currentField.dbId || currentField.id)
+        .eq('status', jobStatus)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (lookup.error || !lookup.data?.id) {
+        throw new Error(lookup.error?.message || 'Active job not found.');
+      }
+
+      const metadata = {
+        source: 'operator-pwa',
+        field_id: currentField.dbId || currentField.id,
+        gps_available: Boolean(gpsState),
+        bales_count: balesCount,
+      };
+
+      if (next === 'COMPLETED') {
+        const { data, error } = await client.rpc('complete_job_with_residue_lot', {
+          p_job_id: lookup.data.id,
+          p_quantity_tonnes: Number(residueTonnes),
+          p_moisture_pct: moistureValue,
+          p_bales_count: balesCount,
+          p_metadata: metadata,
+        });
+        if (error) throw new Error(error.message);
+        if (!data?.lot_id || data?.job_status !== 'COMPLETED') {
+          throw new Error('The server did not confirm job and residue-lot completion.');
+        }
+        setJobStatus('COMPLETED');
+        setJobMessage(data.replayed
+          ? 'Job was already completed; its existing residue lot was confirmed.'
+          : 'Job completed and its measured residue lot was recorded atomically. Verification and buyer matching remain separate steps.');
+        onJobCompleted(currentField.id, Number(currentField.payout_amount || 0));
+      } else {
+        const { error } = await client.rpc('transition_job', {
+          p_job_id: lookup.data.id,
+          p_next_status: next,
+          p_metadata: metadata,
+        });
+        if (error) throw new Error(error.message);
+        setJobStatus(next);
+        setJobMessage(`Job moved to ${next.replace(/_/g, ' ')}.`);
+      }
+    } catch (error) {
+      setJobMessage(error instanceof Error ? error.message : 'Job transition failed.');
+    } finally {
+      setJobBusy(false);
+    }
+  };
+
+  const isJobFinished = currentField?.status === 'CLEARED_PENDING_AUDIT' || currentField?.status === 'VERIFIED_NON_BURN';
+
+  if (!currentField) {
+    return (
+      <section className="tone-adapt field-empty mx-auto max-w-3xl" aria-live="polite">
+        <h2>{t('No field is assigned to this operator session.')}</h2>
+        <p>Live operator actions appear only after a field and job are assigned by the connected dispatch workflow.</p>
+      </section>
+    );
+  }
 
   return (
-    <div className="flex flex-col lg:flex-row items-center lg:items-start justify-center gap-6 p-2 max-w-6xl mx-auto">
-      {/* Left side: Context for Judges */}
-      <div className="w-full lg:w-5/12 flex flex-col gap-4">
-        <div className="glass-panel-emerald p-4">
-          <div className="flex items-center gap-2 mb-2">
-            <Sparkles className="w-5 h-5 text-emerald-400" />
-            <h3 className="font-bold text-base text-white">
-              Beat 3: Field Operator PWA & Instant UPI Settlement
+    <div className="tone-adapt field-operator-surface grid grid-cols-1 items-start gap-8 lg:grid-cols-[minmax(0,1fr)_440px]">
+      {/* Operator context */}
+      <div className="flex w-full flex-col gap-4 lg:sticky lg:top-24">
+        <div className="ui-card is-green">
+          <div className="mb-2 flex items-center gap-3">
+            <Sparkles className="h-6 w-6 shrink-0 text-[var(--brand)]" />
+            <h3 className="ui-title !mt-0">
+              {t('Field operator workspace')}
             </h3>
           </div>
-          <p className="text-xs text-slate-300 leading-relaxed">
-            In rural Punjab, network connectivity in the middle of a 20-acre paddy field is notoriously spotty. The Baler Operator PWA runs offline-first with IndexedDB caching and GPS geofencing. 
+          <p className="ui-lede">
+            {t('Capture the job state, device location, measured residue and field evidence.')} 
           </p>
-          <div className="mt-3 bg-slate-950/70 p-2.5 rounded-lg border border-emerald-500/20 text-xs text-slate-300">
-            <strong>The Trust Breakthrough:</strong> Weight disputes at the farmgate kill traditional baling models. Nirdhoom verifies the field polygon via GPS, locks per-acre pricing, and fires a guaranteed UPI settlement in under 90 seconds!
+          <div className="ui-note mt-4 !bg-[var(--surface)] !text-[var(--ink-2)]">
+            <strong>{t('The field workflow should capture GPS, job state, quantity and evidence. Payment remains intentionally disabled in this release.')}</strong>
           </div>
         </div>
 
         {/* Machine Telemetry Card */}
-        <div className="glass-panel p-4 flex flex-col gap-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <span className="text-xl">🚜</span>
+        <div className="ui-card flex flex-col gap-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <span className="grid h-11 w-11 place-items-center rounded-xl bg-[var(--wheat-soft)] text-xl">🚜</span>
               <div>
-                <h4 className="font-bold text-sm text-white">{activeMachine.name}</h4>
-                <p className="text-[11px] text-slate-400">{activeMachine.home_chc}</p>
+                <h4 className="text-[15.5px] font-bold text-[var(--ink)]">{activeMachine.name}</h4>
+                <p className="text-[12.5px] text-[var(--muted)]">{activeMachine.home_chc}</p>
               </div>
             </div>
-            <span className="badge badge-emerald text-[10px]">
+            <span className="ui-chip is-green">
               {activeMachine.status}
             </span>
           </div>
 
-          <div className="grid grid-cols-2 gap-2 text-xs">
-            <div className="bg-slate-900/80 p-2 rounded border border-slate-800">
-              <span className="text-slate-400 text-[10px] block">Operator</span>
-              <strong className="text-white text-xs">{activeMachine.operator_name}</strong>
-              <span className="text-slate-500 text-[10px] block">{activeMachine.operator_phone}</span>
+          <div className="ui-kv-grid grid-cols-2">
+            <div className="ui-kv">
+              <span className="ui-kv-label">{t('Operator')}</span>
+              <strong className="ui-kv-value">{activeMachine.operator_name}</strong>
+              <span className="text-[12px] text-[var(--muted)]">{activeMachine.operator_phone}</span>
             </div>
-            <div className="bg-slate-900/80 p-2 rounded border border-slate-800">
-              <span className="text-slate-400 text-[10px] block">Daily Capacity</span>
-              <strong className="text-emerald-400 text-xs">{activeMachine.capacity_acres_day} Acres / day</strong>
-              <span className="text-slate-500 text-[10px] block">50-80% Subsidy CRM</span>
+            <div className="ui-kv">
+              <span className="ui-kv-label">{t('Daily Capacity')}</span>
+              <strong className="ui-kv-value !text-[var(--brand-ink)]">{activeMachine.capacity_acres_day} Acres / day</strong>
+              <span className="text-[12px] text-[var(--muted)]">{t('CRM programme reference')}</span>
             </div>
           </div>
         </div>
       </div>
 
       {/* Right side: Mobile Field Device UI */}
-      <div className="w-full lg:w-7/12 flex justify-center">
+      <div className="flex w-full justify-center">
         <div className="device-frame">
           {/* Status Bar */}
           <div className="device-header">
-            <span>11:15 AM</span>
+            <span>{t('Operator session')}</span>
             <div className="device-notch"></div>
             <div className="flex items-center gap-1.5 text-xs">
-              <Wifi className="w-3 h-3 text-emerald-400" />
-              <span>PWA Offline Sync</span>
+              {offlineSyncActive
+                ? <Wifi className="w-3 h-3 text-emerald-400" aria-hidden="true" />
+                : <WifiOff className="w-3 h-3 text-amber-300" aria-hidden="true" />}
+              <span>{offlineSyncActive ? t('Online') : t('Offline — queued changes will sync later')}</span>
             </div>
           </div>
 
@@ -106,23 +405,33 @@ export const BalerPWA: React.FC<BalerPWAProps> = ({
                 🚜
               </div>
               <div>
-                <h4 className="font-bold text-sm text-white">Nirdhoom Field Dispatch</h4>
+                <h4 className="font-bold text-sm text-white">{t('Nirdhoom Field Dispatch')}</h4>
                 <span className="text-[10px] text-emerald-400 font-mono">
-                  GPS Geofence: Ubhawal Sector 4
+                  {t('GPS status')}: {gpsState ? t('Location available') : t('Waiting for device location')}
                 </span>
               </div>
             </div>
 
-            <div className="flex items-center gap-1.5 bg-emerald-950/80 px-2 py-0.5 rounded-full border border-emerald-500/30 text-[10px] text-emerald-300 font-semibold">
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
-              <span>Sync Active</span>
+            <div
+              role="status"
+              aria-live="polite"
+              className={`flex items-center gap-1.5 px-2 py-1 rounded-full border text-[10px] font-semibold ${
+                offlineSyncActive
+                  ? 'bg-emerald-950/80 border-emerald-500/30 text-emerald-300'
+                  : 'bg-amber-950/80 border-amber-500/40 text-amber-200'
+              }`}
+            >
+              {offlineSyncActive
+                ? <Wifi className="w-3 h-3" aria-hidden="true" />
+                : <WifiOff className="w-3 h-3" aria-hidden="true" />}
+              <span>{offlineSyncActive ? t('Online') : t('Offline — queued changes will sync later')}</span>
             </div>
           </div>
 
           {/* Field Job Selection Queue */}
           <div className="p-3 bg-slate-950 flex flex-col gap-3 min-h-[460px]">
             <div className="text-[11px] font-bold uppercase text-slate-400 tracking-wider">
-              Assigned Field Queue for Today
+              {t('Assigned Field Queue for Today')}
             </div>
 
             <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-none">
@@ -161,9 +470,9 @@ export const BalerPWA: React.FC<BalerPWAProps> = ({
                 </div>
 
                 <div className="text-right">
-                  <span className="text-[10px] text-slate-400 block">Settle Payout</span>
+                  <span className="text-[10px] text-slate-400 block">{demoMode ? t('Demo quote') : t('Server quote')}</span>
                   <span className="text-base font-extrabold text-emerald-400 font-mono">
-                    ₹{(currentField.payout_amount || 5075).toLocaleString()}
+                    {demoMode ? `₹${Number(currentField.payout_amount || 0).toLocaleString()}` : (currentField.payout_amount ? `₹${Number(currentField.payout_amount).toLocaleString()}` : 'Server quote pending')}
                   </span>
                 </div>
               </div>
@@ -172,23 +481,23 @@ export const BalerPWA: React.FC<BalerPWAProps> = ({
               <div className="rounded-xl overflow-hidden border border-slate-800 relative bg-slate-900">
                 <img 
                   src="/images/baling_fleet.jpg" 
-                  alt="Assigned Baler in Sangrur Field" 
+                  alt="Baler working on the selected field" 
                   className="w-full h-24 object-cover object-center"
-                />
+                 loading="lazy" decoding="async" />
                 <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/40 to-transparent" />
                 <div className="absolute bottom-2 left-2.5 right-2.5 flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <img 
                       src="/images/farmer_gurpreet.jpg" 
-                      alt="Gurpreet Singh" 
+                      alt="Field operator / farmer record" 
                       className="w-7 h-7 rounded-full border border-emerald-400 object-cover"
-                    />
+                     loading="lazy" decoding="async" />
                     <span className="text-xs font-bold text-white drop-shadow">
                       {currentField.farmer_name}
                     </span>
                   </div>
                   <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/80 text-slate-950 font-extrabold">
-                    Ready For Baler
+                    {demoMode ? t('Demo assignment') : t('Live assignment')}
                   </span>
                 </div>
               </div>
@@ -200,14 +509,14 @@ export const BalerPWA: React.FC<BalerPWAProps> = ({
                   className="flex-1 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 border border-slate-700"
                 >
                   <Phone className="w-3.5 h-3.5 text-emerald-400" />
-                  <span>Call Farmer</span>
+                  <span>{t('Call Farmer')}</span>
                 </a>
                 <button
-                  onClick={() => alert(`Starting GPS route navigation to field [${currentField.center.lat}, ${currentField.center.lng}]`)}
+                  onClick={() => window.open(`https://www.google.com/maps/dir/?api=1&destination=${currentField.center.lat},${currentField.center.lng}`, '_blank', 'noopener,noreferrer')}
                   className="flex-1 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer shadow"
                 >
                   <Navigation className="w-3.5 h-3.5" />
-                  <span>GPS Navigate</span>
+                  <span>{t('GPS Navigate')}</span>
                 </button>
               </div>
 
@@ -216,67 +525,144 @@ export const BalerPWA: React.FC<BalerPWAProps> = ({
                 <div className="flex justify-between items-center">
                   <span className="text-slate-400 flex items-center gap-1">
                     <Droplet className="w-3.5 h-3.5 text-cyan-400" />
-                    <span>Moisture Probe Sensor:</span>
+                    <span>{demoMode ? t('Demo moisture control:') : t('Measured moisture (%):')}</span>
                   </span>
-                  <strong className={`font-mono ${moistureValue > 20 ? 'text-red-400' : 'text-emerald-400'}`}>
-                    {moistureValue}% {moistureValue <= 20 ? '(Optimal)' : '(High Moisture Alert!)'}
+                  <strong className={`font-mono ${(displayedMoisture ?? 0) > 20 ? 'text-red-400' : 'text-emerald-400'}`}>
+                    {displayedMoisture === null ? t('Not measured') : `${displayedMoisture}% ${displayedMoisture <= 20 ? t('Optimal') : t('High Moisture Alert!')}`}
                   </strong>
                 </div>
-                <input
-                  type="range"
-                  min="10"
-                  max="25"
-                  step="0.5"
-                  value={moistureValue}
-                  onChange={(e) => setMoistureValue(Number(e.target.value))}
-                  className="w-full accent-cyan-400 cursor-pointer"
-                />
+                {demoMode ? (
+                  <input
+                    type="range"
+                    min="10"
+                    max="25"
+                    step="0.5"
+                    value={displayedMoisture ?? 14.2}
+                    onChange={(e) => setMoistureValue(Number(e.target.value))}
+                    className="w-full accent-cyan-400 cursor-pointer"
+                    aria-label="Demo moisture percentage"
+                  />
+                ) : (
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="0.1"
+                    value={moistureValue ?? ''}
+                    onChange={(e) => setMoistureValue(e.target.value === '' ? null : Number(e.target.value))}
+                    placeholder="Enter measured %"
+                    className="w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-right text-xs font-mono text-white"
+                    aria-label="Measured moisture percentage"
+                  />
+                )}
 
                 <div className="flex justify-between items-center pt-1 border-t border-slate-800 text-[11px]">
-                  <span className="text-slate-400">Straw Yield (Round Bales):</span>
-                  <strong className="text-white font-mono">{balesCount} Bales (~{Math.round(currentField.acreage * 2.2 * 10) / 10} Tonnes)</strong>
+                  <span className="text-slate-400">{demoMode ? t('Estimated straw yield:') : t('Measured bale count:')}</span>
+                  {demoMode ? (
+                    <strong className="text-white font-mono">{displayedBalesCount} {t('Bales')} (~{Math.round(currentField.acreage * 2.2 * 10) / 10} Tonnes)</strong>
+                  ) : (
+                    <div className="flex items-center gap-1">
+                      <input
+                        id="measured-bales-count"
+                        type="number"
+                        min="1"
+                        max="1000000"
+                        step="1"
+                        value={balesCount ?? ''}
+                        onChange={(e) => setBalesCount(e.target.value === '' ? null : Number(e.target.value))}
+                        placeholder="Count"
+                        className="w-24 rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-right text-xs font-mono text-white"
+                        aria-label="Measured bale count"
+                      />
+                      <span className="text-slate-500">{t('Bales')}</span>
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex items-center justify-between gap-2 text-[11px]">
+                  <label className="text-slate-400" htmlFor="residue-tonnes">{t('Measured residue')}</label>
+                  <div className="flex items-center gap-1">
+                    <input
+                      id="residue-tonnes"
+                      type="number"
+                      min="0"
+                      step="0.1"
+                      value={residueTonnes || ''}
+                      onChange={(e) => setResidueTonnes(Number(e.target.value) || 0)}
+                      disabled={demoMode}
+                      placeholder={demoMode ? 'Demo' : '0.0'}
+                      className="w-20 rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-right text-xs font-mono text-white"
+                      aria-label="Measured residue quantity in tonnes"
+                    />
+                    <span className="text-slate-500">t</span>
+                  </div>
                 </div>
 
                 <div className="flex justify-between items-center text-[11px]">
-                  <span className="text-slate-400">QR Lot Code Generated:</span>
+                  <span className="text-slate-400">QR lot:</span>
                   <span className="font-mono text-cyan-300 font-bold flex items-center gap-1">
                     <QrCode className="w-3 h-3" />
-                    {currentField.qr_lot_code || 'PB-SGR-26-LOT-0101'}
+                    {demoMode ? (currentField.qr_lot_code || 'DEMO-LOT') : (currentField.qr_lot_code || 'Not assigned')}
                   </span>
                 </div>
               </div>
 
-              {/* Big Action: Trigger UPI Settlement */}
+              <div className="rounded-lg border border-cyan-500/20 bg-cyan-950/10 p-3 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-bold text-cyan-200">Field evidence</span>
+                  <span className={`text-[10px] font-semibold ${offlineSyncActive ? 'text-emerald-300' : 'text-amber-300'}`}>
+                    {offlineSyncActive ? 'ONLINE' : 'OFFLINE QUEUE'}
+                  </span>
+                </div>
+                <div className="mt-1 text-slate-400">
+                  {gpsState ? `GPS ±${Math.round(gpsState.accuracy)}m • ${gpsStale ? `stale ${gpsAgeSeconds}s ago` : `updated ${gpsAgeSeconds}s ago`}` : demoMode ? 'Demo GPS' : 'Waiting for device GPS permission'}
+                  {!demoMode && queuedEvidence > 0 && ` • ${queuedEvidence} queued`}
+                </div>
+                {!demoMode && gpsStale && (
+                  <div role="status" className="mt-2 rounded-lg border border-amber-400/30 bg-amber-500/10 px-2.5 py-2 text-[11px] font-semibold text-amber-200">
+                    GPS reading is stale. Keep location enabled and wait for a fresh device reading before treating the position as current.
+                  </div>
+                )}
+                <label className="mt-2 flex cursor-pointer items-center justify-center rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 font-bold text-cyan-200 hover:bg-cyan-500/20">
+                  Capture field photo
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    capture="environment"
+                    className="sr-only"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0];
+                      if (file) void handleEvidenceCapture(file);
+                      event.currentTarget.value = '';
+                    }}
+                  />
+                </label>
+                {evidenceMessage && <p className="mt-2 text-[11px] text-slate-300">{evidenceMessage}</p>}
+                {jobMessage && <p role="status" className="mt-2 text-[11px] text-slate-300">{jobMessage}</p>}
+              </div>
+
+              {/* Completion action: payment is never triggered from the browser */}
               {!isJobFinished ? (
                 <button
-                  onClick={() => setShowUpiModal(true)}
-                  className="w-full py-3 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 text-white font-extrabold text-xs shadow-lg shadow-emerald-600/30 flex items-center justify-center gap-2 cursor-pointer transition-all active:scale-95"
+                  onClick={() => {
+                    void advanceLiveJob();
+                  }}
+                  disabled={jobBusy || (!demoMode && (!jobStatus || (jobStatus === 'PROOF_PENDING' && !completionMeasurementsValid)))}
+                  className="w-full py-3 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-500 hover:from-emerald-500 hover:to-teal-400 disabled:from-slate-800 disabled:to-slate-800 disabled:text-slate-500 text-white font-extrabold text-xs shadow-lg shadow-emerald-600/30 disabled:shadow-none flex items-center justify-center gap-2 cursor-pointer transition-all active:scale-95"
                 >
                   <Zap className="w-4 h-4 fill-current text-amber-300" />
-                  <span>Mark Cleared & Fire &lt;90s UPI Payout</span>
+                  <span>{jobBusy ? 'Updating job…' : demoMode ? 'Complete demo field record' : jobStatus === 'PROOF_PENDING' && !completionMeasurementsValid ? 'Enter measured quantity, moisture and bale count' : jobStatus ? `Advance job: ${jobStatus.replace(/_/g, ' ')} →` : 'No active server job'}</span>
                 </button>
               ) : (
                 <div className="p-2.5 rounded-xl bg-emerald-950/70 border border-emerald-500/50 text-emerald-300 text-xs font-bold text-center flex items-center justify-center gap-2">
                   <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                  <span>Job Cleared • UPI Paid & Recorded in Ledger</span>
+                  <span>{demoMode ? 'Demo job completed locally • no payment made' : 'Live completion is controlled by the server workflow'}</span>
                 </div>
               )}
             </div>
           </div>
         </div>
       </div>
-
-      {/* Settlement Modal */}
-      {showUpiModal && (
-        <UpiSettlementModal
-          field={currentField}
-          onClose={() => setShowUpiModal(false)}
-          onSettlementComplete={(fId, amt) => {
-            onJobCompleted(fId, amt);
-            setTimeout(() => setShowUpiModal(false), 2400);
-          }}
-        />
-      )}
     </div>
   );
 };
